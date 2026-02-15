@@ -58,6 +58,7 @@ pip install -r requirements.txt
 ```bash
 set DATABASE_URL=postgresql://...
 set OPENAI_API_KEY=sk-...
+set OPENAI_BASE_URL=https://api.openai.com/v1
 ```
 
 3. 启动 Web
@@ -76,6 +77,7 @@ python app.py
 - Web 进程：`web: gunicorn app:app --bind 0.0.0.0:$PORT --workers 2 --timeout 120`
 - 必须挂载 Volume 到 `/app/uploads`
 - 需要配置 PostgreSQL、OpenAI Key
+- 可选配置 `OPENAI_BASE_URL`（默认 `https://api.openai.com/v1`，用于代理/中转服务）
 
 ## API 概览
 

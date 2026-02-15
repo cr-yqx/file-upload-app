@@ -159,6 +159,7 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
         MAX_CONTENT_LENGTH=int(os.getenv("MAX_FILE_SIZE", str(10 * 1024 * 1024))),
         OPENAI_API_KEY=os.getenv("OPENAI_API_KEY", ""),
         OPENAI_MODEL=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
+        OPENAI_BASE_URL=os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1"),
         SUMMARY_MAX_TEXT_CHARS=int(os.getenv("SUMMARY_MAX_TEXT_CHARS", "20000")),
         SUMMARY_MIN_TEXT_CHARS=int(os.getenv("SUMMARY_MIN_TEXT_CHARS", "80")),
         SUMMARY_MAX_ATTEMPTS=int(os.getenv("SUMMARY_MAX_ATTEMPTS", "2")),
@@ -792,7 +793,8 @@ def generate_ai_summary(text: str) -> Dict[str, Any]:
         raise RuntimeError("OPENAI_API_KEY is not configured.")
 
     model_name = current_app.config.get("OPENAI_MODEL", "gpt-4o-mini")
-    client = OpenAI(api_key=api_key)
+    base_url = current_app.config.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
+    client = OpenAI(api_key=api_key, base_url=base_url)
 
     system_prompt = (
         "You summarize study materials. Always return strict JSON with keys: "
