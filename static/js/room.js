@@ -6,6 +6,8 @@ const workspace = document.getElementById("workspace");
 const authForm = document.getElementById("authForm");
 const uploadForm = document.getElementById("uploadForm");
 const fileInput = document.getElementById("fileInput");
+const filePickerButton = document.getElementById("filePickerButton");
+const filePickerName = document.getElementById("filePickerName");
 const uploadButton = document.getElementById("uploadButton");
 const refreshButton = document.getElementById("refreshButton");
 const fileList = document.getElementById("fileList");
@@ -61,6 +63,7 @@ const state = {
     newCommentCount: 0,
     discussion: {status: "idle", ended_at: null, summary_version: 0, is_owner: false},
     discussionSummary: null,
+    lastSummaryRenderKey: "",
     pollers: {presence: null, room: null, comments: null, discussion: null},
 };
 
@@ -138,6 +141,13 @@ async function copyText(value) {
     input.select();
     document.execCommand("copy");
     document.body.removeChild(input);
+}
+
+function updateSelectedFileNameLabel() {
+    if (!filePickerName) return;
+    const selectedFile = fileInput?.files?.[0];
+    filePickerName.textContent = selectedFile ? selectedFile.name : "未选择文件";
+    filePickerName.title = selectedFile ? selectedFile.name : "未选择文件";
 }
 
 function openNicknameModal() {
@@ -331,42 +341,78 @@ function onUploaderFileSelect(uploaderToken, fileId) {
     loadFiles();
 }
 
-function createUploaderPill(participant, priority = false) {
-    const wrap = document.createElement("div");
-    wrap.className = `uploader-pill ${priority ? "priority" : ""}`.trim();
-    if (state.filters.uploaderToken === participant.viewer_token) wrap.classList.add("active");
-    wrap.title = participant.is_online ? "在线" : "离线";
+function getAvatarText(nickname) {
+    const clean = String(nickname || "").trim();
+    return clean ? clean[0].toUpperCase() : "?";
+}
 
-    const text = document.createElement("span");
-    text.textContent = `${participant.is_online ? "●" : "○"} ${participant.nickname}`;
-    wrap.appendChild(text);
+function createUploadShortcutChip(item, onClick) {
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = `file-icon-chip ${state.selectedFileId === item.id ? "active" : ""}`.trim();
+    chip.textContent = item.type === "pdf" ? "PDF" : "IMG";
+    chip.title = item.original_name || "未命名文件";
+    chip.addEventListener("click", (event) => {
+        event.stopPropagation();
+        onClick();
+    });
+    return chip;
+}
+
+function createUploaderCard(participant, priority = false) {
+    const wrap = document.createElement("article");
+    wrap.className = `uploader-card ${priority ? "priority" : ""}`.trim();
+    if (state.filters.uploaderToken === participant.viewer_token) wrap.classList.add("active");
+
+    const header = document.createElement("div");
+    header.className = "uploader-card-header";
+
+    const avatar = document.createElement("span");
+    avatar.className = "uploader-avatar";
+    avatar.textContent = getAvatarText(participant.nickname);
+    header.appendChild(avatar);
+
+    const identity = document.createElement("div");
+    identity.className = "uploader-identity";
+    const name = document.createElement("strong");
+    name.textContent = participant.nickname;
+    identity.appendChild(name);
+
+    const status = document.createElement("span");
+    status.className = `uploader-status ${participant.is_online ? "online" : "offline"}`;
+    status.textContent = participant.is_online ? "在线" : "离线";
+    identity.appendChild(status);
+    header.appendChild(identity);
+    wrap.appendChild(header);
+
+    const shortcuts = document.createElement("div");
+    shortcuts.className = "uploader-files";
+    (participant.recent_uploads || []).forEach((item) => {
+        shortcuts.appendChild(
+            createUploadShortcutChip(item, () => onUploaderFileSelect(participant.viewer_token, item.id))
+        );
+    });
+    if (participant.extra_upload_count > 0) {
+        const extra = document.createElement("span");
+        extra.className = "file-icon-chip extra-count";
+        extra.textContent = `+${participant.extra_upload_count}`;
+        shortcuts.appendChild(extra);
+    }
+    if (!shortcuts.childElementCount) {
+        const empty = document.createElement("span");
+        empty.className = "uploader-empty";
+        empty.textContent = "暂无上传";
+        shortcuts.appendChild(empty);
+    }
+    wrap.appendChild(shortcuts);
+
     wrap.addEventListener("click", () => {
         state.filters.uploaderToken = participant.viewer_token;
         uploaderFilterSelect.value = participant.viewer_token;
         loadFiles();
     });
-
-    (participant.recent_uploads || []).forEach((item) => {
-        const chip = document.createElement("button");
-        chip.type = "button";
-        chip.className = "file-icon-chip";
-        chip.textContent = item.type === "pdf" ? "PDF" : "IMG";
-        chip.title = item.original_name;
-        chip.addEventListener("click", (event) => {
-            event.stopPropagation();
-            onUploaderFileSelect(participant.viewer_token, item.id);
-        });
-        wrap.appendChild(chip);
-    });
-    if (participant.extra_upload_count > 0) {
-        const extra = document.createElement("span");
-        extra.className = "file-icon-chip";
-        extra.textContent = `+${participant.extra_upload_count}`;
-        wrap.appendChild(extra);
-    }
     return wrap;
 }
-
 function renderUploaderFilterOptions() {
     const previous = state.filters.uploaderToken;
     uploaderFilterSelect.innerHTML = '<option value="">全部协作者</option>';
@@ -387,13 +433,9 @@ function renderMyUploadShortcuts() {
         return;
     }
     me.recent_uploads.forEach((item) => {
-        const chip = document.createElement("button");
-        chip.type = "button";
-        chip.className = "file-icon-chip";
-        chip.textContent = item.type === "pdf" ? "PDF" : "IMG";
-        chip.title = item.original_name;
-        chip.addEventListener("click", () => onUploaderFileSelect(me.viewer_token, item.id));
-        myUploadShortcuts.appendChild(chip);
+        myUploadShortcuts.appendChild(
+            createUploadShortcutChip(item, () => onUploaderFileSelect(me.viewer_token, item.id))
+        );
     });
 }
 
@@ -402,10 +444,10 @@ function renderCollaborators() {
     collaboratorList.innerHTML = "";
     const others = state.collaborators.filter((item) => !item.is_me);
     others.filter((item) => item.upload_count > 0).forEach((item) => {
-        collaboratorPriorityRow.appendChild(createUploaderPill(item, true));
+        collaboratorPriorityRow.appendChild(createUploaderCard(item, true));
     });
     others.filter((item) => item.upload_count <= 0).forEach((item) => {
-        collaboratorList.appendChild(createUploaderPill(item, false));
+        collaboratorList.appendChild(createUploaderCard(item, false));
     });
     renderUploaderFilterOptions();
     renderMyUploadShortcuts();
@@ -450,6 +492,14 @@ function renderDiscussionSummary() {
         status === "done" ? "讨论总结已生成，后续新评论会节流重算。" :
         status === "failed" ? "讨论总结生成失败，可再次尝试结束讨论。" :
         "讨论尚未结束。";
+
+    const summaryVersion = state.discussionSummary?.version || 0;
+    const summaryUpdatedAt = state.discussionSummary?.updated_at || "";
+    const renderKey = `${summaryVersion}::${summaryUpdatedAt}`;
+    if (state.lastSummaryRenderKey === renderKey) {
+        return;
+    }
+    state.lastSummaryRenderKey = renderKey;
 
     discussionSummaryContainer.innerHTML = "";
     const payload = state.discussionSummary?.summary_json;
@@ -524,6 +574,7 @@ async function loadFiles(silent = false) {
         const data = await requestJson(`/api/rooms/${roomSlug}/files?${params.toString()}`);
         state.files = data.files || [];
         state.discussion = data.discussion || state.discussion;
+        updateDiscussionPoller();
         updateMetrics();
         if (!state.selectedFileId || !state.files.some((item) => item.id === state.selectedFileId)) {
             state.selectedFileId = state.files[0]?.id || null;
@@ -563,8 +614,9 @@ async function loadComments(reset = false) {
     renderComments();
 }
 
-async function loadDiscussionSummary() {
-    if (!state.isAuthorized || !state.discussion?.ended_at) return;
+async function loadDiscussionSummary(force = false) {
+    if (!state.isAuthorized) return;
+    if (!force && !state.discussion?.ended_at) return;
     const data = await requestJson(`/api/rooms/${roomSlug}/discussion/summary`);
     state.discussion = data.discussion || state.discussion;
     state.discussionSummary = data.summary || null;
@@ -617,7 +669,7 @@ function selectFile(fileId) {
 async function initializeWorkspace() {
     await fetchProfile();
     await sendPresence();
-    await Promise.all([loadCollaborators(), loadFiles(), loadDiscussionSummary()]);
+    await Promise.all([loadCollaborators(), loadFiles(), loadDiscussionSummary(true)]);
     if (!state.viewer.has_profile) openNicknameModal();
     startPollers();
 }
@@ -687,6 +739,7 @@ uploadForm?.addEventListener("submit", async (event) => {
         setButtonLoading(uploadButton, true, "上传中...");
         const data = await requestJson(`/api/rooms/${roomSlug}/upload`, {method: "POST", body: formData});
         fileInput.value = "";
+        updateSelectedFileNameLabel();
         state.selectedFileId = data.file?.id || state.selectedFileId;
         showMessage(`上传成功：${data.file?.original_name || selectedFile.name}`, "success");
         await Promise.all([loadFiles(), loadCollaborators()]);
@@ -703,7 +756,7 @@ uploadForm?.addEventListener("submit", async (event) => {
 
 refreshButton?.addEventListener("click", async () => {
     try {
-        await Promise.all([loadFiles(), loadCollaborators(), loadDiscussionSummary()]);
+        await Promise.all([loadFiles(), loadCollaborators(), loadDiscussionSummary(true)]);
     } catch (error) {
         if (error.status === 401) handleAuthExpired();
         else showMessage(error.message);
@@ -718,6 +771,9 @@ copyRoomLinkButton?.addEventListener("click", async () => {
         showMessage(error.message || "复制失败。");
     }
 });
+
+filePickerButton?.addEventListener("click", () => fileInput?.click());
+fileInput?.addEventListener("change", () => updateSelectedFileNameLabel());
 
 editNicknameButton?.addEventListener("click", () => openNicknameModal());
 nicknameSkipButton?.addEventListener("click", () => closeNicknameModal());
@@ -769,7 +825,7 @@ commentForm?.addEventListener("submit", async (event) => {
         commentInput.value = "";
         newCommentBadge.hidden = true;
         state.newCommentCount = 0;
-        await Promise.all([loadComments(true), loadFiles(true), loadCollaborators(), loadDiscussionSummary()]);
+        await Promise.all([loadComments(true), loadFiles(true), loadCollaborators(), loadDiscussionSummary(true)]);
         showMessage("评论已发布。", "success");
     } catch (error) {
         if (error.status === 401) handleAuthExpired();
@@ -782,9 +838,12 @@ commentForm?.addEventListener("submit", async (event) => {
 endDiscussionButton?.addEventListener("click", async () => {
     try {
         setButtonLoading(endDiscussionButton, true, "处理中...");
-        await requestJson(`/api/rooms/${roomSlug}/discussion/end`, {method: "POST"});
+        const data = await requestJson(`/api/rooms/${roomSlug}/discussion/end`, {method: "POST"});
+        state.discussion = data.discussion || state.discussion;
+        renderDiscussionSummary();
+        updateDiscussionPoller();
         showMessage("讨论已结束，正在生成总结...", "success");
-        await loadDiscussionSummary();
+        await loadDiscussionSummary(true);
     } catch (error) {
         if (error.status === 401) handleAuthExpired();
         else showMessage(error.message);
@@ -821,6 +880,7 @@ newCommentBadge?.addEventListener("click", () => {
 
 window.addEventListener("beforeunload", () => stopAllPollers());
 
+updateSelectedFileNameLabel();
 setAuthorized(state.isAuthorized);
 if (state.isAuthorized) {
     initializeWorkspace().catch((error) => {
@@ -828,3 +888,4 @@ if (state.isAuthorized) {
         else showMessage(error.message);
     });
 }
+

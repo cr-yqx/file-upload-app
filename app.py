@@ -26,7 +26,6 @@ from openai import OpenAI
 from pypdf import PdfReader
 from sqlalchemy import inspect, or_, text
 from werkzeug.security import check_password_hash, generate_password_hash
-from werkzeug.utils import secure_filename
 
 
 db = SQLAlchemy()
@@ -64,6 +63,7 @@ DISCUSSION_RECOMPUTE_MIN_SECONDS = 30
 
 discussion_timers_lock = threading.Lock()
 discussion_timers: Dict[int, threading.Timer] = {}
+CONTROL_CHAR_PATTERN = re.compile(r"[\x00-\x1f\x7f]")
 
 
 class Room(db.Model):
@@ -105,6 +105,7 @@ class FileRecord(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     room_id = db.Column(db.Integer, db.ForeignKey("rooms.id", ondelete="CASCADE"), nullable=False, index=True)
     original_name = db.Column(db.String(255), nullable=False)
+    original_name_full = db.Column(db.Text, nullable=True)
     stored_name = db.Column(db.String(255), nullable=False)
     mime_type = db.Column(db.String(120), nullable=False)
     size_bytes = db.Column(db.BigInteger, nullable=False)
@@ -939,6 +940,7 @@ def register_routes(app: Flask) -> None:
                 or_(
                     FileRecord.stored_name == filename,
                     FileRecord.original_name == filename,
+                    FileRecord.original_name_full == filename,
                 ),
             )
             .order_by(FileRecord.id.desc())
@@ -1010,6 +1012,23 @@ def get_extension(filename: str) -> str:
     if "." not in filename:
         return ""
     return filename.rsplit(".", 1)[1].lower()
+
+
+def sanitize_original_filename(raw_filename: str, extension: str) -> str:
+    normalized = str(raw_filename or "").replace("\\", "/").strip()
+    basename = normalized.rsplit("/", 1)[-1]
+    cleaned = CONTROL_CHAR_PATTERN.sub("", basename).strip()
+    if cleaned:
+        return cleaned
+    suffix = f".{extension}" if extension else ""
+    return f"file-{uuid.uuid4().hex}{suffix}"
+
+
+def get_file_original_name(file_record: FileRecord) -> str:
+    candidate = (file_record.original_name_full or file_record.original_name or "").strip()
+    if candidate:
+        return candidate
+    return file_record.stored_name
 
 
 def get_client_ip() -> str:
@@ -1187,7 +1206,7 @@ def serialize_participant(room_id: int, participant: RoomParticipant, viewer_tok
         uploads_payload.append(
             {
                 "id": file_record.id,
-                "original_name": file_record.original_name,
+                "original_name": get_file_original_name(file_record),
                 "type": "image" if get_extension(file_record.stored_name) in IMAGE_EXTENSIONS else "pdf",
             }
         )
@@ -1239,7 +1258,7 @@ def serialize_file(file_record: FileRecord, legacy: bool = False, viewer_token: 
         "room_slug": file_record.room.slug,
         "filename": file_record.stored_name,
         "stored_name": file_record.stored_name,
-        "original_name": file_record.original_name,
+        "original_name": get_file_original_name(file_record),
         "mime_type": file_record.mime_type,
         "size": file_record.size_bytes,
         "size_mb": round(file_record.size_bytes / (1024 * 1024), 2),
@@ -1469,7 +1488,7 @@ def build_discussion_summary_json(room: Room) -> Dict[str, Any]:
             file_record.id,
             {
                 "file_id": file_record.id,
-                "file_name": file_record.original_name,
+                "file_name": get_file_original_name(file_record),
                 "comment_details": [],
             },
         )
@@ -1608,12 +1627,27 @@ def upgrade_schema_for_existing_databases() -> None:
                 conn.execute(text("ALTER TABLE rooms ADD COLUMN discussion_summary_version INTEGER DEFAULT 0"))
 
     if "files" in existing_tables:
-        file_columns = {column["name"] for column in inspector.get_columns("files")}
+        file_column_defs = {column["name"]: column for column in inspector.get_columns("files")}
+        file_columns = set(file_column_defs.keys())
         with db.engine.begin() as conn:
             if "uploader_viewer_token" not in file_columns:
                 conn.execute(text("ALTER TABLE files ADD COLUMN uploader_viewer_token VARCHAR(64)"))
             if "uploader_nickname" not in file_columns:
                 conn.execute(text("ALTER TABLE files ADD COLUMN uploader_nickname VARCHAR(40)"))
+            if "original_name_full" not in file_columns:
+                conn.execute(text("ALTER TABLE files ADD COLUMN original_name_full TEXT"))
+
+            original_name_type = str(file_column_defs.get("original_name", {}).get("type", "")).lower()
+            if "varchar" in original_name_type and db.engine.dialect.name == "postgresql":
+                conn.execute(text("ALTER TABLE files ALTER COLUMN original_name TYPE TEXT"))
+
+            conn.execute(
+                text(
+                    "UPDATE files "
+                    "SET original_name_full = original_name "
+                    "WHERE (original_name_full IS NULL OR original_name_full = '') AND original_name IS NOT NULL"
+                )
+            )
 
 
 def write_access_log(room_id: int, action: str, file_id: Optional[int] = None) -> None:
@@ -1654,7 +1688,7 @@ def handle_file_upload(room: Room, deprecated: bool, bypass_auth: bool, require_
         return jsonify({"success": False, "message": "Unsupported file type."}), 400
 
     extension = get_extension(uploaded_file.filename)
-    safe_original_name = secure_filename(uploaded_file.filename) or f"file-{uuid.uuid4().hex}.{extension}"
+    preserved_original_name = sanitize_original_filename(uploaded_file.filename, extension)
     stored_name = f"{uuid.uuid4().hex}.{extension}"
     viewer_token = get_room_viewer_token(room.slug)
     viewer_nickname = get_room_viewer_nickname(room.slug)
@@ -1672,7 +1706,8 @@ def handle_file_upload(room: Room, deprecated: bool, bypass_auth: bool, require_
 
     file_record = FileRecord(
         room_id=room.id,
-        original_name=safe_original_name,
+        original_name=preserved_original_name[:255],
+        original_name_full=preserved_original_name,
         stored_name=stored_name,
         mime_type=mime_type,
         size_bytes=file_size,

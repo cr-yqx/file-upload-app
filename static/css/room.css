@@ -222,30 +222,121 @@ body {
 }
 
 .my-upload-shortcuts,
-.priority-collaborators,
-.collaborator-list,
 .catalog-list {
     display: flex;
     flex-wrap: wrap;
     gap: 0.42rem;
 }
 
-.uploader-pill,
-.file-icon-chip {
-    border: 1px solid var(--line);
-    border-radius: var(--radius-sm);
-    background: rgba(255, 255, 255, 0.82);
-    padding: 0.2rem 0.5rem;
-    font-size: 0.82rem;
-    cursor: pointer;
+.priority-collaborators,
+.collaborator-list {
+    display: grid;
+    gap: 0.52rem;
 }
 
-.uploader-pill.priority {
+.uploader-card {
+    border: 1px solid var(--line);
+    border-radius: var(--radius-md);
+    background: rgba(255, 255, 255, 0.84);
+    padding: 0.52rem 0.58rem;
+    cursor: pointer;
+    display: grid;
+    gap: 0.44rem;
+    transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+}
+
+.uploader-card:hover {
+    border-color: rgba(23, 77, 118, 0.35);
+    transform: translateY(-1px);
+}
+
+.uploader-card.priority {
     border-color: rgba(30, 104, 149, 0.35);
     background: rgba(233, 244, 252, 0.88);
 }
 
-.uploader-pill.active,
+.uploader-card.active {
+    border-color: rgba(182, 129, 40, 0.45);
+    box-shadow: inset 0 0 0 1px rgba(182, 129, 40, 0.26);
+}
+
+.uploader-card-header {
+    display: flex;
+    align-items: center;
+    gap: 0.52rem;
+    min-height: 34px;
+}
+
+.uploader-avatar {
+    width: 30px;
+    height: 30px;
+    border-radius: 50%;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: linear-gradient(135deg, #24567d 0%, #113b5a 100%);
+    color: #f4f8fc;
+    font-weight: 700;
+    font-size: 0.86rem;
+    flex: 0 0 auto;
+}
+
+.uploader-identity {
+    display: grid;
+    gap: 0.06rem;
+}
+
+.uploader-identity strong {
+    font-size: 0.9rem;
+}
+
+.uploader-status {
+    font-size: 0.74rem;
+    color: var(--muted);
+}
+
+.uploader-status.online {
+    color: #1f6a43;
+}
+
+.uploader-status.offline {
+    color: #8a5f18;
+}
+
+.uploader-files {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.36rem;
+}
+
+.uploader-empty {
+    font-size: 0.8rem;
+    color: var(--muted);
+}
+
+.file-icon-chip {
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    background: rgba(255, 255, 255, 0.86);
+    padding: 0.2rem 0.5rem;
+    font-size: 0.8rem;
+    cursor: pointer;
+    min-height: 32px;
+    line-height: 1;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    max-width: 170px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.file-icon-chip.extra-count {
+    cursor: default;
+}
+
 .file-icon-chip.active {
     border-color: rgba(182, 129, 40, 0.45);
     background: rgba(255, 245, 228, 0.9);
@@ -262,6 +353,25 @@ body {
 .uploader-filter {
     display: grid;
     gap: 0.4rem;
+}
+
+.catalog-section {
+    display: grid;
+    gap: 0.32rem;
+    margin-top: 0.45rem;
+}
+
+.catalog-section p {
+    margin: 0;
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--muted);
+    letter-spacing: 0.02em;
+}
+
+.catalog-list {
+    align-items: center;
+    min-height: 34px;
 }
 
 .discussion-header,
@@ -442,8 +552,48 @@ body {
     line-height: 1.56;
 }
 
+.file-picker {
+    min-height: 42px;
+    border: 1px solid var(--line-strong);
+    border-radius: var(--radius-sm);
+    background: rgba(255, 255, 255, 0.9);
+    padding: 0.26rem;
+    display: flex;
+    align-items: center;
+    gap: 0.48rem;
+}
+
+.file-input-native {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    border: 0;
+    clip: rect(0 0 0 0);
+}
+
+.file-picker-btn {
+    min-height: 34px;
+    padding: 0 0.82rem;
+    flex: 0 0 auto;
+}
+
+.file-picker-name {
+    min-height: 34px;
+    flex: 1;
+    display: inline-flex;
+    align-items: center;
+    color: var(--muted);
+    font-size: 0.88rem;
+    padding-right: 0.12rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
 input[type="password"],
-input[type="file"],
 input[type="text"],
 textarea,
 select {
@@ -608,6 +758,18 @@ button,
 
     button,
     .file-actions a {
+        width: 100%;
+    }
+
+    .file-picker {
+        flex-wrap: wrap;
+    }
+
+    .file-picker-btn {
+        width: auto;
+    }
+
+    .file-picker-name {
         width: 100%;
     }
 }

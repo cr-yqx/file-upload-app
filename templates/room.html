@@ -56,7 +56,11 @@
                 <section class="glass card upload-card">
                     <h2>上传资料</h2>
                     <form id="uploadForm" class="stack-form">
-                        <input type="file" id="fileInput" accept=".jpg,.jpeg,.png,.gif,.webp,.pdf" required>
+                        <div class="file-picker">
+                            <input type="file" id="fileInput" class="file-input-native" accept=".jpg,.jpeg,.png,.gif,.webp,.pdf" required>
+                            <button type="button" id="filePickerButton" class="btn-secondary file-picker-btn">选择文件</button>
+                            <span id="filePickerName" class="file-picker-name">未选择文件</span>
+                        </div>
                         <button type="submit" class="btn-primary" id="uploadButton">上传</button>
                     </form>
                     <p class="tips">上传前必须先设置昵称。支持 JPG/JPEG/PNG/GIF/WEBP/PDF，单文件最大 10MB。</p>

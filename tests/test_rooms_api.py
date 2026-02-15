@@ -129,6 +129,39 @@ def test_upload_pdf_creates_async_job(client):
     assert job_response.get_json()["job"]["status"] == "queued"
 
 
+def test_upload_preserves_original_filename(client, test_app):
+    create_room(client, name="Filename Room", slug="filename-room", passcode="abcd1234")
+    set_profile(client, "filename-room", "NameTester")
+
+    source_name = "中文 空格 (v1) #final ✅.png"
+    upload_response = upload_png(client, slug="filename-room", filename=source_name)
+    assert upload_response.status_code == 200
+    payload = upload_response.get_json()
+    assert payload["file"]["original_name"] == source_name
+
+    with test_app.app_context():
+        record = app_module.FileRecord.query.filter_by(room_id=payload["room"]["id"]).first()
+        assert record is not None
+        assert record.original_name_full == source_name
+
+
+def test_upload_preserves_very_long_filename(client, test_app):
+    create_room(client, name="Long Name Room", slug="long-name-room", passcode="abcd1234")
+    set_profile(client, "long-name-room", "LongTester")
+
+    long_name = f"{'超' * 300}.png"
+    upload_response = upload_png(client, slug="long-name-room", filename=long_name)
+    assert upload_response.status_code == 200
+    payload = upload_response.get_json()
+    assert payload["file"]["original_name"] == long_name
+
+    with test_app.app_context():
+        record = app_module.FileRecord.query.filter_by(room_id=payload["room"]["id"]).first()
+        assert record is not None
+        assert record.original_name_full == long_name
+        assert len(record.original_name) <= 255
+
+
 def test_presence_and_collaborators(client):
     create_room(client, name="Presence Room", slug="presence-room", passcode="abcd1234")
     set_profile(client, "presence-room", "Carol")
