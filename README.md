@@ -9,6 +9,7 @@
 - 文件管理：列表展示、查看、删除
 - AI 摘要：上传 PDF 后异步生成摘要（OpenAI）
 - 任务状态：`queued/running/done/failed` 轮询
+- 协作互动：匿名昵称、评论、星标、已读、文件协作指标
 - 兼容旧接口：`/upload`、`/api/files`、`/files` 映射到默认房间 `demo` 并返回 `deprecated`
 
 ## 技术栈
@@ -86,10 +87,16 @@ python app.py
 
 - `POST /api/rooms` 创建房间
 - `POST /api/rooms/<room_slug>/auth` 房间鉴权
+- `GET /api/rooms/<room_slug>/profile` 获取当前会话昵称状态
+- `POST /api/rooms/<room_slug>/profile` 设置/更新昵称
 - `POST /api/rooms/<room_slug>/upload` 上传文件
 - `GET /api/rooms/<room_slug>/files` 获取文件列表
 - `GET /api/rooms/<room_slug>/jobs/<job_id>` 查询摘要任务
 - `DELETE /api/rooms/<room_slug>/files/<file_id>` 删除文件
+- `GET /api/rooms/<room_slug>/files/<file_id>/comments` 获取最近评论
+- `POST /api/rooms/<room_slug>/files/<file_id>/comments` 新增评论
+- `PUT /api/rooms/<room_slug>/files/<file_id>/star` 星标/取消星标
+- `PUT /api/rooms/<room_slug>/files/<file_id>/read` 标记已读/未读
 
 ### 兼容接口（Deprecated）
 

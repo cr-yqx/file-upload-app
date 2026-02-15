@@ -95,6 +95,22 @@ class FileRecord(db.Model):
         cascade="all, delete-orphan",
         order_by=lambda: SummaryJob.id.desc(),
     )
+    comments = db.relationship(
+        "FileComment",
+        back_populates="file",
+        cascade="all, delete-orphan",
+        order_by=lambda: FileComment.created_at.asc(),
+    )
+    stars = db.relationship(
+        "FileStar",
+        back_populates="file",
+        cascade="all, delete-orphan",
+    )
+    read_states = db.relationship(
+        "FileReadState",
+        back_populates="file",
+        cascade="all, delete-orphan",
+    )
 
 
 class SummaryJob(db.Model):
@@ -125,8 +141,56 @@ class AccessLog(db.Model):
     created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
 
 
+class FileComment(db.Model):
+    __tablename__ = "file_comments"
+
+    id = db.Column(db.Integer, primary_key=True)
+    room_id = db.Column(db.Integer, db.ForeignKey("rooms.id", ondelete="CASCADE"), nullable=False, index=True)
+    file_id = db.Column(db.Integer, db.ForeignKey("files.id", ondelete="CASCADE"), nullable=False, index=True)
+    viewer_token = db.Column(db.String(64), nullable=False, index=True)
+    nickname = db.Column(db.String(40), nullable=False)
+    content = db.Column(db.Text, nullable=False)
+    created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+
+    file = db.relationship("FileRecord", back_populates="comments")
+
+
+class FileStar(db.Model):
+    __tablename__ = "file_stars"
+    __table_args__ = (db.UniqueConstraint("file_id", "viewer_token", name="uq_file_star_viewer"),)
+
+    id = db.Column(db.Integer, primary_key=True)
+    room_id = db.Column(db.Integer, db.ForeignKey("rooms.id", ondelete="CASCADE"), nullable=False, index=True)
+    file_id = db.Column(db.Integer, db.ForeignKey("files.id", ondelete="CASCADE"), nullable=False, index=True)
+    viewer_token = db.Column(db.String(64), nullable=False, index=True)
+    nickname = db.Column(db.String(40), nullable=False)
+    created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+
+    file = db.relationship("FileRecord", back_populates="stars")
+
+
+class FileReadState(db.Model):
+    __tablename__ = "file_read_states"
+    __table_args__ = (db.UniqueConstraint("file_id", "viewer_token", name="uq_file_read_viewer"),)
+
+    id = db.Column(db.Integer, primary_key=True)
+    room_id = db.Column(db.Integer, db.ForeignKey("rooms.id", ondelete="CASCADE"), nullable=False, index=True)
+    file_id = db.Column(db.Integer, db.ForeignKey("files.id", ondelete="CASCADE"), nullable=False, index=True)
+    viewer_token = db.Column(db.String(64), nullable=False, index=True)
+    nickname = db.Column(db.String(40), nullable=False)
+    created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    is_read = db.Column(db.Boolean, nullable=False, default=True)
+
+    file = db.relationship("FileRecord", back_populates="read_states")
+
+
 db.Index("idx_files_room_created_at", FileRecord.room_id, FileRecord.created_at)
 db.Index("idx_jobs_file_id", SummaryJob.file_id)
+db.Index("idx_file_comments_file_created_at", FileComment.file_id, FileComment.created_at)
+db.Index("idx_file_comments_room_created_at", FileComment.room_id, FileComment.created_at)
+db.Index("idx_file_stars_room_created_at", FileStar.room_id, FileStar.created_at)
+db.Index("idx_file_read_states_room_updated_at", FileReadState.room_id, FileReadState.updated_at)
 
 
 def normalize_database_url(url: str) -> str:
@@ -286,6 +350,50 @@ def register_routes(app: Flask) -> None:
 
         return jsonify({"success": True, "room": serialize_room(room)})
 
+    @app.get("/api/rooms/<room_slug>/profile")
+    def get_room_profile_api(room_slug: str) -> Any:
+        room, error_response = get_room_for_api(room_slug, require_auth=True)
+        if error_response:
+            return error_response
+
+        viewer_nickname = get_room_viewer_nickname(room_slug)
+        return jsonify(
+            {
+                "success": True,
+                "room": serialize_room(room),
+                "viewer": {
+                    "has_profile": bool(viewer_nickname),
+                    "nickname": viewer_nickname,
+                },
+            }
+        )
+
+    @app.post("/api/rooms/<room_slug>/profile")
+    def upsert_room_profile_api(room_slug: str) -> Any:
+        room, error_response = get_room_for_api(room_slug, require_auth=True)
+        if error_response:
+            return error_response
+
+        data = request.get_json(silent=True) or {}
+        nickname = str(data.get("nickname") or "").strip()
+
+        if len(nickname) < 2 or len(nickname) > 20:
+            return jsonify({"success": False, "message": "Nickname must be between 2 and 20 characters."}), 400
+
+        ensure_room_viewer_token(room_slug)
+        set_room_viewer_nickname(room_slug, nickname)
+        write_access_log(room_id=room.id, action="set_profile")
+
+        return jsonify(
+            {
+                "success": True,
+                "viewer": {
+                    "nickname": nickname,
+                    "viewer_token": "session-scoped",
+                },
+            }
+        )
+
     @app.post("/api/rooms/<room_slug>/upload")
     def upload_to_room_api(room_slug: str) -> Any:
         room, error_response = get_room_for_api(room_slug, require_auth=True)
@@ -300,17 +408,31 @@ def register_routes(app: Flask) -> None:
         if error_response:
             return error_response
 
+        viewer_token = get_room_viewer_token(room_slug)
+        viewer_nickname = get_room_viewer_nickname(room_slug)
         room_files = (
             FileRecord.query.filter_by(room_id=room.id)
             .order_by(FileRecord.created_at.desc(), FileRecord.id.desc())
             .all()
         )
+        serialized_files = [serialize_file(file_record, viewer_token=viewer_token) for file_record in room_files]
+        starred_files = sum(1 for file_record in serialized_files if file_record["collab"]["starred_by_me"])
+        unread_files = sum(1 for file_record in serialized_files if not file_record["collab"]["read_by_me"])
 
         return jsonify(
             {
                 "success": True,
                 "room": serialize_room(room),
-                "files": [serialize_file(file_record) for file_record in room_files],
+                "viewer": {
+                    "has_profile": bool(viewer_nickname),
+                    "nickname": viewer_nickname,
+                },
+                "metrics": {
+                    "total_files": len(serialized_files),
+                    "starred_files": starred_files,
+                    "unread_files": unread_files,
+                },
+                "files": serialized_files,
             }
         )
 
@@ -329,11 +451,12 @@ def register_routes(app: Flask) -> None:
         if summary_job is None:
             return jsonify({"success": False, "message": "Job not found."}), 404
 
+        viewer_token = get_room_viewer_token(room_slug)
         return jsonify(
             {
                 "success": True,
                 "job": serialize_job(summary_job),
-                "file": serialize_file(summary_job.file),
+                "file": serialize_file(summary_job.file, viewer_token=viewer_token),
             }
         )
 
@@ -357,6 +480,150 @@ def register_routes(app: Flask) -> None:
         write_access_log(room_id=room.id, action="delete_file", file_id=file_id)
 
         return jsonify({"success": True, "message": "File deleted."})
+
+    @app.get("/api/rooms/<room_slug>/files/<int:file_id>/comments")
+    def list_file_comments_api(room_slug: str, file_id: int) -> Any:
+        room, error_response = get_room_for_api(room_slug, require_auth=True)
+        if error_response:
+            return error_response
+
+        file_record = FileRecord.query.filter_by(id=file_id, room_id=room.id).first()
+        if file_record is None:
+            return jsonify({"success": False, "message": "File not found."}), 404
+
+        latest_comments = (
+            FileComment.query.filter_by(room_id=room.id, file_id=file_id)
+            .order_by(FileComment.created_at.desc(), FileComment.id.desc())
+            .limit(50)
+            .all()
+        )
+        comments = list(reversed(latest_comments))
+        return jsonify({"success": True, "comments": [serialize_comment(comment) for comment in comments]})
+
+    @app.post("/api/rooms/<room_slug>/files/<int:file_id>/comments")
+    def create_file_comment_api(room_slug: str, file_id: int) -> Any:
+        room, error_response = get_room_for_api(room_slug, require_auth=True)
+        if error_response:
+            return error_response
+
+        file_record = FileRecord.query.filter_by(id=file_id, room_id=room.id).first()
+        if file_record is None:
+            return jsonify({"success": False, "message": "File not found."}), 404
+
+        viewer_token = get_room_viewer_token(room_slug)
+        viewer_nickname = get_room_viewer_nickname(room_slug)
+        if not viewer_token or not viewer_nickname:
+            return jsonify({"success": False, "message": "Please set your nickname before commenting."}), 400
+
+        data = request.get_json(silent=True) or {}
+        content = str(data.get("content") or "").strip()
+        if not content:
+            return jsonify({"success": False, "message": "Comment cannot be empty."}), 400
+        if len(content) > 300:
+            return jsonify({"success": False, "message": "Comment is too long (max 300 characters)."}), 400
+
+        comment = FileComment(
+            room_id=room.id,
+            file_id=file_id,
+            viewer_token=viewer_token,
+            nickname=viewer_nickname,
+            content=content,
+        )
+        db.session.add(comment)
+        db.session.commit()
+
+        write_access_log(room_id=room.id, action="add_comment", file_id=file_id)
+        return jsonify({"success": True, "comment": serialize_comment(comment)})
+
+    @app.put("/api/rooms/<room_slug>/files/<int:file_id>/star")
+    def toggle_file_star_api(room_slug: str, file_id: int) -> Any:
+        room, error_response = get_room_for_api(room_slug, require_auth=True)
+        if error_response:
+            return error_response
+
+        file_record = FileRecord.query.filter_by(id=file_id, room_id=room.id).first()
+        if file_record is None:
+            return jsonify({"success": False, "message": "File not found."}), 404
+
+        viewer_token = get_room_viewer_token(room_slug)
+        viewer_nickname = get_room_viewer_nickname(room_slug)
+        if not viewer_token or not viewer_nickname:
+            return jsonify({"success": False, "message": "Please set your nickname before starring files."}), 400
+
+        data = request.get_json(silent=True) or {}
+        starred = data.get("starred")
+        if not isinstance(starred, bool):
+            return jsonify({"success": False, "message": "Field 'starred' must be boolean."}), 400
+
+        existing_star = FileStar.query.filter_by(file_id=file_id, viewer_token=viewer_token).first()
+        if starred and existing_star is None:
+            db.session.add(
+                FileStar(
+                    room_id=room.id,
+                    file_id=file_id,
+                    viewer_token=viewer_token,
+                    nickname=viewer_nickname,
+                )
+            )
+        elif not starred and existing_star is not None:
+            db.session.delete(existing_star)
+        elif existing_star is not None:
+            existing_star.nickname = viewer_nickname
+
+        db.session.commit()
+        write_access_log(room_id=room.id, action="star_file" if starred else "unstar_file", file_id=file_id)
+
+        return jsonify(
+            {
+                "success": True,
+                "collab": build_file_collab(file_record.id, viewer_token),
+            }
+        )
+
+    @app.put("/api/rooms/<room_slug>/files/<int:file_id>/read")
+    def toggle_file_read_api(room_slug: str, file_id: int) -> Any:
+        room, error_response = get_room_for_api(room_slug, require_auth=True)
+        if error_response:
+            return error_response
+
+        file_record = FileRecord.query.filter_by(id=file_id, room_id=room.id).first()
+        if file_record is None:
+            return jsonify({"success": False, "message": "File not found."}), 404
+
+        viewer_token = get_room_viewer_token(room_slug)
+        viewer_nickname = get_room_viewer_nickname(room_slug)
+        if not viewer_token or not viewer_nickname:
+            return jsonify({"success": False, "message": "Please set your nickname before changing read status."}), 400
+
+        data = request.get_json(silent=True) or {}
+        read_value = data.get("read")
+        if not isinstance(read_value, bool):
+            return jsonify({"success": False, "message": "Field 'read' must be boolean."}), 400
+
+        existing_state = FileReadState.query.filter_by(file_id=file_id, viewer_token=viewer_token).first()
+        if existing_state is None:
+            existing_state = FileReadState(
+                room_id=room.id,
+                file_id=file_id,
+                viewer_token=viewer_token,
+                nickname=viewer_nickname,
+                is_read=read_value,
+            )
+            db.session.add(existing_state)
+        else:
+            existing_state.is_read = read_value
+            existing_state.nickname = viewer_nickname
+            existing_state.updated_at = datetime.utcnow()
+
+        db.session.commit()
+        write_access_log(room_id=room.id, action="mark_read" if read_value else "mark_unread", file_id=file_id)
+
+        return jsonify(
+            {
+                "success": True,
+                "collab": build_file_collab(file_record.id, viewer_token),
+            }
+        )
 
     @app.get("/uploads/<room_slug>/<stored_name>")
     def uploaded_file(room_slug: str, stored_name: str) -> Any:
@@ -494,12 +761,50 @@ def room_session_key(room_slug: str) -> str:
     return f"room_auth::{room_slug}"
 
 
+def room_viewer_token_session_key(room_slug: str) -> str:
+    return f"room_viewer::{room_slug}::token"
+
+
+def room_viewer_nickname_session_key(room_slug: str) -> str:
+    return f"room_viewer::{room_slug}::nickname"
+
+
 def is_room_authorized(room_slug: str) -> bool:
     return bool(session.get(room_session_key(room_slug)))
 
 
 def mark_room_authorized(room_slug: str) -> None:
     session[room_session_key(room_slug)] = True
+    session.modified = True
+
+
+def get_room_viewer_token(room_slug: str) -> Optional[str]:
+    token = session.get(room_viewer_token_session_key(room_slug))
+    if not token:
+        return None
+    return str(token)
+
+
+def ensure_room_viewer_token(room_slug: str) -> str:
+    existing_token = get_room_viewer_token(room_slug)
+    if existing_token:
+        return existing_token
+
+    token = uuid.uuid4().hex
+    session[room_viewer_token_session_key(room_slug)] = token
+    session.modified = True
+    return token
+
+
+def get_room_viewer_nickname(room_slug: str) -> str:
+    nickname = session.get(room_viewer_nickname_session_key(room_slug))
+    if not nickname:
+        return ""
+    return str(nickname).strip()
+
+
+def set_room_viewer_nickname(room_slug: str, nickname: str) -> None:
+    session[room_viewer_nickname_session_key(room_slug)] = nickname.strip()
     session.modified = True
 
 
@@ -561,7 +866,39 @@ def serialize_job(summary_job: SummaryJob) -> Dict[str, Any]:
     }
 
 
-def serialize_file(file_record: FileRecord, legacy: bool = False) -> Dict[str, Any]:
+def serialize_comment(comment: FileComment) -> Dict[str, Any]:
+    return {
+        "id": comment.id,
+        "room_id": comment.room_id,
+        "file_id": comment.file_id,
+        "nickname": comment.nickname,
+        "content": comment.content,
+        "created_at": comment.created_at.isoformat() + "Z",
+    }
+
+
+def build_file_collab(file_id: int, viewer_token: Optional[str]) -> Dict[str, Any]:
+    comment_count = FileComment.query.filter_by(file_id=file_id).count()
+    star_count = FileStar.query.filter_by(file_id=file_id).count()
+    read_count = FileReadState.query.filter_by(file_id=file_id, is_read=True).count()
+
+    starred_by_me = False
+    read_by_me = False
+    if viewer_token:
+        starred_by_me = FileStar.query.filter_by(file_id=file_id, viewer_token=viewer_token).first() is not None
+        read_state = FileReadState.query.filter_by(file_id=file_id, viewer_token=viewer_token).first()
+        read_by_me = bool(read_state and read_state.is_read)
+
+    return {
+        "comment_count": comment_count,
+        "star_count": star_count,
+        "read_count": read_count,
+        "starred_by_me": starred_by_me,
+        "read_by_me": read_by_me,
+    }
+
+
+def serialize_file(file_record: FileRecord, legacy: bool = False, viewer_token: Optional[str] = None) -> Dict[str, Any]:
     extension = get_extension(file_record.stored_name)
     file_type = "image" if extension in IMAGE_EXTENSIONS else "pdf"
     latest_job_id = file_record.jobs[0].id if file_record.jobs else None
@@ -583,6 +920,7 @@ def serialize_file(file_record: FileRecord, legacy: bool = False) -> Dict[str, A
         "summary_json": file_record.summary_json,
         "summary_error": file_record.summary_error,
         "summary_job_id": latest_job_id,
+        "collab": build_file_collab(file_record.id, viewer_token),
     }
 
     if legacy:
@@ -691,6 +1029,7 @@ def handle_file_upload(room: Room, deprecated: bool, bypass_auth: bool) -> Any:
             db.session.commit()
 
     write_access_log(room_id=room.id, action="upload_file", file_id=file_record.id)
+    viewer_token = get_room_viewer_token(room.slug)
 
     payload = {
         "success": True,
@@ -698,7 +1037,7 @@ def handle_file_upload(room: Room, deprecated: bool, bypass_auth: bool) -> Any:
         "room": serialize_room(room),
         "file_id": file_record.id,
         "summary_job_id": summary_job.id if summary_job else None,
-        "file": serialize_file(file_record, legacy=deprecated),
+        "file": serialize_file(file_record, legacy=deprecated, viewer_token=viewer_token),
     }
 
     if deprecated:

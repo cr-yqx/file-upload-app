@@ -4,26 +4,46 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{{ room.name }} - AI 学习资料房间</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/room.css') }}">
 </head>
 <body data-room-slug="{{ room.slug }}" data-room-name="{{ room.name }}" data-authorized="{{ 'true' if authorized else 'false' }}">
-    <main class="container">
-        <header class="header">
-            <div>
+    <div class="room-bg" aria-hidden="true">
+        <span class="orb orb-1"></span>
+        <span class="orb orb-2"></span>
+        <span class="grid"></span>
+    </div>
+
+    <main class="room-shell">
+        <header class="topbar glass">
+            <div class="room-meta">
+                <p class="eyebrow">AI Study Room</p>
                 <h1>{{ room.name }}</h1>
-                <p>房间标识：<strong>{{ room.slug }}</strong></p>
-                <p>分享链接：<a id="shareLink" href="{{ request.base_url }}" target="_blank">{{ request.base_url }}</a></p>
+                <div class="meta-line">
+                    <span class="chip">房间标识：{{ room.slug }}</span>
+                    <a id="shareLink" href="{{ request.base_url }}" target="_blank" rel="noopener noreferrer">{{ request.base_url }}</a>
+                    <button id="copyRoomLinkButton" type="button" class="btn-ghost">复制链接</button>
+                </div>
             </div>
-            <a class="home-link" href="/">返回入口</a>
+            <div class="topbar-side">
+                <div class="metrics" id="metricsPanel">
+                    <span id="metricTotal">文件 0</span>
+                    <span id="metricStarred">星标 0</span>
+                    <span id="metricUnread">未读 0</span>
+                </div>
+                <a class="home-link" href="/">返回入口</a>
+            </div>
         </header>
 
         {% if is_deprecated %}
-        <div class="deprecated-banner">
+        <div class="deprecated-banner glass">
             你正在访问旧入口映射路径。建议使用新接口：/api/rooms/&lt;room_slug&gt;/...
         </div>
         {% endif %}
 
-        <section id="authSection" class="panel" {% if authorized %}hidden{% endif %}>
+        <section id="authSection" class="glass auth-card" {% if authorized %}hidden{% endif %}>
             <h2>输入房间口令</h2>
             <form id="authForm" class="inline-form">
                 <input type="password" id="authPasscode" minlength="4" maxlength="64" placeholder="请输入口令" required>
@@ -32,29 +52,84 @@
         </section>
 
         <section id="workspace" {% if not authorized %}hidden{% endif %}>
-            <section class="panel upload-panel">
-                <h2>上传资料</h2>
-                <form id="uploadForm" class="inline-form">
-                    <input type="file" id="fileInput" accept=".jpg,.jpeg,.png,.gif,.webp,.pdf" required>
-                    <button type="submit" class="btn-primary" id="uploadButton">上传</button>
-                </form>
-                <p class="tips">支持 JPG/JPEG/PNG/GIF/WEBP/PDF，单文件最大 10MB。PDF 会自动生成摘要。</p>
-            </section>
+            <aside class="left-column">
+                <section class="glass card upload-card">
+                    <h2>上传资料</h2>
+                    <form id="uploadForm" class="stack-form">
+                        <input type="file" id="fileInput" accept=".jpg,.jpeg,.png,.gif,.webp,.pdf" required>
+                        <button type="submit" class="btn-primary" id="uploadButton">上传</button>
+                    </form>
+                    <p class="tips">支持 JPG/JPEG/PNG/GIF/WEBP/PDF，单文件最大 10MB。PDF 会自动生成摘要。</p>
+                </section>
 
-            <section class="panel">
-                <div class="panel-title-row">
-                    <h2>文件列表</h2>
-                    <button id="refreshButton" class="btn-secondary">刷新</button>
-                </div>
-                <div id="loading" class="loading" hidden>加载中...</div>
-                <div id="emptyState" class="empty" hidden>当前房间还没有文件。</div>
-                <div id="fileList" class="file-list"></div>
+                <section class="glass card">
+                    <h3>协作身份</h3>
+                    <p id="viewerNicknameValue" class="nickname-value">未设置昵称</p>
+                    <p class="tips">设置昵称后可使用评论、星标、已读能力。</p>
+                    <button id="editNicknameButton" class="btn-secondary" type="button">设置昵称</button>
+                </section>
+
+                <section class="glass card">
+                    <h3>筛选</h3>
+                    <label class="switch-row">
+                        <input type="checkbox" id="onlyStarredToggle">
+                        <span>仅看星标</span>
+                    </label>
+                    <label class="switch-row">
+                        <input type="checkbox" id="onlyUnreadToggle">
+                        <span>仅看未读</span>
+                    </label>
+                    <button id="clearFiltersButton" class="btn-ghost" type="button">清除筛选</button>
+                </section>
+            </aside>
+
+            <section class="right-column">
+                <section class="glass card list-card">
+                    <div class="panel-title-row">
+                        <h2>文件列表</h2>
+                        <button id="refreshButton" class="btn-secondary">刷新</button>
+                    </div>
+                    <div id="loading" class="loading" hidden>加载中...</div>
+                    <div id="emptyState" class="empty" hidden>当前房间还没有文件。</div>
+                    <div id="fileList" class="file-list"></div>
+                </section>
             </section>
         </section>
 
-        <div id="globalMessage" class="message" hidden></div>
+        <footer class="status-bar">
+            <div id="globalMessage" class="message" hidden></div>
+        </footer>
     </main>
+
+    <div id="nicknameModal" class="modal" hidden>
+        <div class="modal-panel glass">
+            <h2>设置协作昵称</h2>
+            <p>你的昵称将用于评论、星标和已读记录展示。</p>
+            <form id="nicknameForm" class="stack-form">
+                <input type="text" id="nicknameInput" minlength="2" maxlength="20" placeholder="例如：小王 / Alice" required>
+                <div class="modal-actions">
+                    <button type="submit" class="btn-primary" id="nicknameSubmitButton">保存昵称</button>
+                    <button type="button" class="btn-ghost" id="nicknameSkipButton">稍后再说</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <aside id="commentDrawer" class="comment-drawer" hidden>
+        <div class="drawer-panel glass">
+            <header class="drawer-header">
+                <h3>文件评论</h3>
+                <button id="closeCommentDrawerButton" class="btn-ghost" type="button">关闭</button>
+            </header>
+            <p id="commentFileMeta" class="comment-file-meta"></p>
+            <div id="commentList" class="comment-list"></div>
+            <form id="commentForm" class="comment-form">
+                <textarea id="commentInput" maxlength="300" placeholder="写下你对这份资料的观点或行动建议..." required></textarea>
+                <button id="submitCommentButton" type="submit" class="btn-primary">发布评论</button>
+            </form>
+        </div>
+    </aside>
 
     <script src="{{ url_for('static', filename='js/room.js') }}"></script>
 </body>
-</html>
+</html>
