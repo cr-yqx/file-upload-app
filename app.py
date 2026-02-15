@@ -131,7 +131,13 @@ db.Index("idx_jobs_file_id", SummaryJob.file_id)
 
 def normalize_database_url(url: str) -> str:
     if url.startswith("postgres://"):
-        return url.replace("postgres://", "postgresql://", 1)
+        url = url.replace("postgres://", "postgresql://", 1)
+
+    # SQLAlchemy defaults "postgresql://" to psycopg2.
+    # Force psycopg3 driver since this project uses psycopg[binary].
+    if url.startswith("postgresql://"):
+        return url.replace("postgresql://", "postgresql+psycopg://", 1)
+
     return url
 
 
