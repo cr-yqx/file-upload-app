@@ -795,6 +795,7 @@ def generate_ai_summary(text: str) -> Dict[str, Any]:
     model_name = current_app.config.get("OPENAI_MODEL", "gpt-4o-mini")
     base_url = current_app.config.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
     client = OpenAI(api_key=api_key, base_url=base_url)
+    is_official_openai = "api.openai.com" in base_url
 
     system_prompt = (
         "You summarize study materials. Always return strict JSON with keys: "
@@ -807,18 +808,30 @@ def generate_ai_summary(text: str) -> Dict[str, Any]:
         f"CONTENT:\n{text}"
     )
 
-    completion = client.chat.completions.create(
-        model=model_name,
-        temperature=0.2,
-        response_format={"type": "json_object"},
-        messages=[
+    request_payload: Dict[str, Any] = {
+        "model": model_name,
+        "temperature": 0.2,
+        "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ],
-    )
+    }
+    if is_official_openai:
+        request_payload["response_format"] = {"type": "json_object"}
+
+    completion = client.chat.completions.create(**request_payload)
 
     raw_content = completion.choices[0].message.content or "{}"
-    parsed_json = json.loads(raw_content)
+
+    try:
+        parsed_json = json.loads(raw_content)
+    except json.JSONDecodeError:
+        # Some proxy providers return JSON wrapped in markdown/code fences.
+        cleaned = raw_content.strip()
+        cleaned = re.sub(r"^```(?:json)?", "", cleaned).strip()
+        cleaned = re.sub(r"```$", "", cleaned).strip()
+        parsed_json = json.loads(cleaned or "{}")
+
     return normalize_summary_json(parsed_json)
 
 

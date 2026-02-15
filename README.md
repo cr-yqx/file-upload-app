@@ -78,6 +78,7 @@ python app.py
 - 必须挂载 Volume 到 `/app/uploads`
 - 需要配置 PostgreSQL、OpenAI Key
 - 可选配置 `OPENAI_BASE_URL`（默认 `https://api.openai.com/v1`，用于代理/中转服务）
+- 使用第三方中转时，`OPENAI_MODEL` 必须填该服务 `/v1/models` 返回的真实模型 ID，不能填展示名
 
 ## API 概览
 
