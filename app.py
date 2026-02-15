@@ -788,6 +788,13 @@ def normalize_summary_json(raw_json: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def sanitize_summary_source_text(text: str) -> str:
+    # Remove control chars and collapse whitespace to improve proxy compatibility.
+    cleaned = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", " ", text)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned
+
+
 def generate_ai_summary(text: str) -> Dict[str, Any]:
     api_key = current_app.config.get("OPENAI_API_KEY", "")
     if not api_key:
@@ -809,13 +816,21 @@ def generate_ai_summary(text: str) -> Dict[str, Any]:
         f"CONTENT:\n{text}"
     )
 
+    if is_official_openai:
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
+    else:
+        # Some proxy gateways are stricter on system messages.
+        messages = [
+            {"role": "user", "content": f"{system_prompt}\n\n{user_prompt}"},
+        ]
+
     request_payload: Dict[str, Any] = {
         "model": model_name,
         "temperature": 0.2,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
+        "messages": messages,
     }
     if is_official_openai:
         request_payload["response_format"] = {"type": "json_object"}
@@ -864,12 +879,19 @@ def process_pdf_summary(summary_job_id: int) -> None:
                     raise FileNotFoundError("Uploaded file is missing from storage.")
 
                 extracted_text = extract_pdf_text(stored_path)
+                extracted_text = sanitize_summary_source_text(extracted_text)
                 min_chars = current_app.config["SUMMARY_MIN_TEXT_CHARS"]
                 if len(extracted_text) < min_chars:
                     raise ValueError(f"Extracted text is too short (< {min_chars} chars).")
 
                 max_chars = current_app.config["SUMMARY_MAX_TEXT_CHARS"]
-                cleaned_text = extracted_text[:max_chars]
+                base_url = current_app.config.get("OPENAI_BASE_URL", "")
+                is_official_openai = "api.openai.com" in base_url
+
+                # Proxy providers are often sensitive to very long prompts.
+                provider_cap = max_chars if is_official_openai else min(max_chars, 4000)
+                attempt_cap = max(600, provider_cap // (2 ** (attempt - 1)))
+                cleaned_text = extracted_text[:attempt_cap]
 
                 summary_json = generate_ai_summary(cleaned_text)
 
@@ -886,12 +908,13 @@ def process_pdf_summary(summary_job_id: int) -> None:
             except Exception as exc:
                 error_message = str(exc)
                 app.logger.error(
-                    "Summary generation failed room=%s file_id=%s job_id=%s attempt=%s/%s base_url=%s model=%s error=%s",
+                    "Summary generation failed room=%s file_id=%s job_id=%s attempt=%s/%s used_chars=%s base_url=%s model=%s error=%s",
                     file_record.room.slug,
                     file_record.id,
                     summary_job.id,
                     attempt,
                     max_attempts,
+                    len(cleaned_text) if "cleaned_text" in locals() else 0,
                     current_app.config.get("OPENAI_BASE_URL", ""),
                     current_app.config.get("OPENAI_MODEL", ""),
                     error_message,
