@@ -68,7 +68,7 @@ class Room(db.Model):
         "FileRecord",
         back_populates="room",
         cascade="all, delete-orphan",
-        order_by="FileRecord.created_at.desc()",
+        order_by=lambda: FileRecord.created_at.desc(),
     )
 
 
@@ -93,7 +93,7 @@ class FileRecord(db.Model):
         "SummaryJob",
         back_populates="file",
         cascade="all, delete-orphan",
-        order_by="SummaryJob.id.desc()",
+        order_by=lambda: SummaryJob.id.desc(),
     )
 
 
