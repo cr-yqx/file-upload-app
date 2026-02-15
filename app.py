@@ -734,6 +734,7 @@ def _run_summary_job_in_background(summary_job_id: int) -> None:
     try:
         process_pdf_summary(summary_job_id)
     except Exception as exc:
+        app.logger.exception("Summary background worker crashed for job_id=%s", summary_job_id)
         with app.app_context():
             summary_job = db.session.get(SummaryJob, summary_job_id)
             if summary_job is None:
@@ -884,6 +885,17 @@ def process_pdf_summary(summary_job_id: int) -> None:
                 return
             except Exception as exc:
                 error_message = str(exc)
+                app.logger.error(
+                    "Summary generation failed room=%s file_id=%s job_id=%s attempt=%s/%s base_url=%s model=%s error=%s",
+                    file_record.room.slug,
+                    file_record.id,
+                    summary_job.id,
+                    attempt,
+                    max_attempts,
+                    current_app.config.get("OPENAI_BASE_URL", ""),
+                    current_app.config.get("OPENAI_MODEL", ""),
+                    error_message,
+                )
                 summary_job.error = error_message
                 file_record.summary_error = error_message
 
