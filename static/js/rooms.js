@@ -62,9 +62,9 @@ createRoomForm?.addEventListener('submit', async (event) => {
 
         createResult.hidden = false;
         createResult.innerHTML = `
-            <p>·¿¼ä´´½¨³É¹¦£º<strong>${data.room.name}</strong></p>
-            <p>·ÖÏíÁ´½Ó£º<a href="${data.share_url}" target="_blank">${data.share_url}</a></p>
-            <p>ÕıÔÚÌø×ªµ½·¿¼ä...</p>
+            <p>æˆ¿é—´åˆ›å»ºæˆåŠŸï¼š<strong>${data.room.name}</strong></p>
+            <p>åˆ†äº«é“¾æ¥ï¼š<a href="${data.share_url}" target="_blank">${data.share_url}</a></p>
+            <p>æ­£åœ¨è·³è½¬åˆ°æˆ¿é—´...</p>
         `;
 
         setTimeout(() => {
@@ -86,7 +86,7 @@ joinRoomForm?.addEventListener('submit', async (event) => {
     const passcode = document.getElementById('joinRoomPasscode').value;
 
     if (!slug) {
-        showGlobalMessage('ÇëÏÈÊäÈëÕıÈ·µÄ·¿¼ä±êÊ¶¡£');
+        showGlobalMessage('è¯·å…ˆè¾“å…¥æ­£ç¡®çš„æˆ¿é—´æ ‡è¯†ã€‚');
         return;
     }
 
@@ -108,4 +108,4 @@ joinRoomForm?.addEventListener('submit', async (event) => {
     }
 });
 
-document.getElementById('joinRoomSlug').value = defaultRoomSlug;
+document.getElementById('joinRoomSlug').value = defaultRoomSlug;

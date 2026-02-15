@@ -63,7 +63,7 @@ function renderSummary(file) {
     wrapper.className = 'summary';
 
     if (file.type !== 'pdf') {
-        wrapper.innerHTML = '<p>Í¼Æ¬ÎÄ¼şÎŞĞèÕªÒª¡£</p>';
+        wrapper.innerHTML = '<p>å›¾ç‰‡æ–‡ä»¶æ— éœ€æ‘˜è¦ã€‚</p>';
         return wrapper;
     }
 
@@ -72,15 +72,15 @@ function renderSummary(file) {
         wrapper.innerHTML = '';
 
         const title = document.createElement('h4');
-        title.textContent = 'AI ÕªÒª';
+        title.textContent = 'AI æ‘˜è¦';
         wrapper.appendChild(title);
 
         const oneLine = document.createElement('p');
-        oneLine.textContent = `Ò»¾ä»°£º${summary.one_line_summary}`;
+        oneLine.textContent = `ä¸€å¥è¯ï¼š${summary.one_line_summary}`;
         wrapper.appendChild(oneLine);
 
         const keyPointsTitle = document.createElement('h4');
-        keyPointsTitle.textContent = '¹Ø¼üµã';
+        keyPointsTitle.textContent = 'å…³é”®ç‚¹';
         wrapper.appendChild(keyPointsTitle);
         const keyPoints = document.createElement('ul');
         (summary.key_points || []).forEach((point) => {
@@ -91,11 +91,11 @@ function renderSummary(file) {
         wrapper.appendChild(keyPoints);
 
         const keywords = document.createElement('p');
-        keywords.textContent = `¹Ø¼ü´Ê£º${(summary.keywords || []).join(' / ')}`;
+        keywords.textContent = `å…³é”®è¯ï¼š${(summary.keywords || []).join(' / ')}`;
         wrapper.appendChild(keywords);
 
         const actionsTitle = document.createElement('h4');
-        actionsTitle.textContent = '½¨ÒéĞĞ¶¯';
+        actionsTitle.textContent = 'å»ºè®®è¡ŒåŠ¨';
         wrapper.appendChild(actionsTitle);
         const actions = document.createElement('ul');
         (summary.suggested_actions || []).forEach((action) => {
@@ -109,26 +109,26 @@ function renderSummary(file) {
     }
 
     if (file.summary_status === 'failed') {
-        wrapper.innerHTML = `<p>ÕªÒªÉú³ÉÊ§°Ü£º${file.summary_error || 'Î´Öª´íÎó'}</p>`;
+        wrapper.innerHTML = `<p>æ‘˜è¦ç”Ÿæˆå¤±è´¥ï¼š${file.summary_error || 'æœªçŸ¥é”™è¯¯'}</p>`;
         return wrapper;
     }
 
-    wrapper.innerHTML = '<p>ÕªÒªÉú³ÉÖĞ£¬ÇëÉÔºò...</p>';
+    wrapper.innerHTML = '<p>æ‘˜è¦ç”Ÿæˆä¸­ï¼Œè¯·ç¨å€™...</p>';
     return wrapper;
 }
 
 function summaryStatusLabel(status) {
     switch (status) {
         case 'pending':
-            return 'ÅÅ¶ÓÖĞ';
+            return 'æ’é˜Ÿä¸­';
         case 'running':
-            return '´¦ÀíÖĞ';
+            return 'å¤„ç†ä¸­';
         case 'done':
-            return 'ÒÑÍê³É';
+            return 'å·²å®Œæˆ';
         case 'failed':
-            return 'Ê§°Ü';
+            return 'å¤±è´¥';
         default:
-            return 'ÎŞĞèÕªÒª';
+            return 'æ— éœ€æ‘˜è¦';
     }
 }
 
@@ -165,7 +165,7 @@ function ensurePolling(file) {
 
             if (error.status === 401) {
                 setAuthorized(false);
-                showMessage('·¿¼äÊÚÈ¨ÒÑ¹ıÆÚ£¬ÇëÖØĞÂÊäÈë¿ÚÁî¡£');
+                showMessage('æˆ¿é—´æˆæƒå·²è¿‡æœŸï¼Œè¯·é‡æ–°è¾“å…¥å£ä»¤ã€‚');
             }
         }
     }, 2000);
@@ -184,15 +184,15 @@ function createFileCard(file) {
     const meta = document.createElement('div');
     meta.className = 'file-meta';
     meta.innerHTML = `
-        <span>´óĞ¡£º${file.size_mb} MB</span>
-        <span>Ê±¼ä£º${file.modified}</span>
-        <span>ÀàĞÍ£º${file.type.toUpperCase()}</span>
+        <span>å¤§å°ï¼š${file.size_mb} MB</span>
+        <span>æ—¶é—´ï¼š${file.modified}</span>
+        <span>ç±»å‹ï¼š${file.type.toUpperCase()}</span>
     `;
     card.appendChild(meta);
 
     const badge = document.createElement('span');
     badge.className = `badge ${file.summary_status}`;
-    badge.textContent = `ÕªÒª×´Ì¬£º${summaryStatusLabel(file.summary_status)}`;
+    badge.textContent = `æ‘˜è¦çŠ¶æ€ï¼š${summaryStatusLabel(file.summary_status)}`;
     card.appendChild(badge);
 
     card.appendChild(renderSummary(file));
@@ -204,11 +204,11 @@ function createFileCard(file) {
     viewLink.href = file.url;
     viewLink.target = '_blank';
     viewLink.rel = 'noopener noreferrer';
-    viewLink.textContent = '²é¿´ÎÄ¼ş';
+    viewLink.textContent = 'æŸ¥çœ‹æ–‡ä»¶';
 
     const deleteButton = document.createElement('button');
     deleteButton.className = 'danger';
-    deleteButton.textContent = 'É¾³ıÎÄ¼ş';
+    deleteButton.textContent = 'åˆ é™¤æ–‡ä»¶';
     deleteButton.addEventListener('click', () => deleteFile(file));
 
     actions.appendChild(viewLink);
@@ -246,7 +246,7 @@ async function loadFiles() {
     } catch (error) {
         if (error.status === 401) {
             setAuthorized(false);
-            showMessage('·¿¼äÊÚÈ¨ÒÑ¹ıÆÚ£¬ÇëÖØĞÂÊäÈë¿ÚÁî¡£');
+            showMessage('æˆ¿é—´æˆæƒå·²è¿‡æœŸï¼Œè¯·é‡æ–°è¾“å…¥å£ä»¤ã€‚');
         } else {
             showMessage(error.message);
         }
@@ -256,7 +256,7 @@ async function loadFiles() {
 }
 
 async function deleteFile(file) {
-    const confirmed = window.confirm(`É¾³ıÎÄ¼ş»áÍ¬Ê±É¾³ıÕªÒª½á¹û£¬È·ÈÏÉ¾³ı ¡°${file.original_name || file.filename}¡± Âğ£¿`);
+    const confirmed = window.confirm(`åˆ é™¤æ–‡ä»¶ä¼šåŒæ—¶åˆ é™¤æ‘˜è¦ç»“æœï¼Œç¡®è®¤åˆ é™¤ â€œ${file.original_name || file.filename}â€ å—ï¼Ÿ`);
     if (!confirmed) {
         return;
     }
@@ -265,7 +265,7 @@ async function deleteFile(file) {
         await requestJson(`/api/rooms/${roomSlug}/files/${file.id}`, {
             method: 'DELETE',
         });
-        showMessage('ÎÄ¼şÒÑÉ¾³ı¡£', 'success');
+        showMessage('æ–‡ä»¶å·²åˆ é™¤ã€‚', 'success');
         await loadFiles();
     } catch (error) {
         showMessage(error.message);
@@ -288,7 +288,7 @@ authForm?.addEventListener('submit', async (event) => {
         });
 
         setAuthorized(true);
-        showMessage(`·¿¼ä ${roomName} ÒÑ½âËø¡£`, 'success');
+        showMessage(`æˆ¿é—´ ${roomName} å·²è§£é”ã€‚`, 'success');
         await loadFiles();
     } catch (error) {
         showMessage(error.message);
@@ -303,7 +303,7 @@ uploadForm?.addEventListener('submit', async (event) => {
 
     const selectedFile = fileInput.files?.[0];
     if (!selectedFile) {
-        showMessage('ÇëÏÈÑ¡ÔñÎÄ¼ş¡£');
+        showMessage('è¯·å…ˆé€‰æ‹©æ–‡ä»¶ã€‚');
         return;
     }
 
@@ -318,7 +318,7 @@ uploadForm?.addEventListener('submit', async (event) => {
         });
 
         const fileName = data.file?.original_name || data.file?.filename || selectedFile.name;
-        showMessage(`ÉÏ´«³É¹¦£º${fileName}`, 'success');
+        showMessage(`ä¸Šä¼ æˆåŠŸï¼š${fileName}`, 'success');
         fileInput.value = '';
         await loadFiles();
     } catch (error) {
@@ -339,4 +339,4 @@ window.addEventListener('beforeunload', () => {
 setAuthorized(isAuthorized);
 if (isAuthorized) {
     loadFiles();
-}
+}

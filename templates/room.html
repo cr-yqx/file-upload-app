@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{{ room.name }} - AI Ñ§Ï°×ÊÁÏ·¿¼ä</title>
+    <title>{{ room.name }} - AI å­¦ä¹ èµ„æ–™æˆ¿é—´</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/room.css') }}">
 </head>
 <body data-room-slug="{{ room.slug }}" data-room-name="{{ room.name }}" data-authorized="{{ 'true' if authorized else 'false' }}">
@@ -11,43 +11,43 @@
         <header class="header">
             <div>
                 <h1>{{ room.name }}</h1>
-                <p>·¿¼ä±êÊ¶£º<strong>{{ room.slug }}</strong></p>
-                <p>·ÖÏíÁ´½Ó£º<a id="shareLink" href="{{ request.base_url }}" target="_blank">{{ request.base_url }}</a></p>
+                <p>æˆ¿é—´æ ‡è¯†ï¼š<strong>{{ room.slug }}</strong></p>
+                <p>åˆ†äº«é“¾æŽ¥ï¼š<a id="shareLink" href="{{ request.base_url }}" target="_blank">{{ request.base_url }}</a></p>
             </div>
-            <a class="home-link" href="/">·µ»ØÈë¿Ú</a>
+            <a class="home-link" href="/">è¿”å›žå…¥å£</a>
         </header>
 
         {% if is_deprecated %}
         <div class="deprecated-banner">
-            ÄãÕýÔÚ·ÃÎÊ¾ÉÈë¿ÚÓ³ÉäÂ·¾¶¡£½¨ÒéÊ¹ÓÃÐÂ½Ó¿Ú£º/api/rooms/&lt;room_slug&gt;/...
+            ä½ æ­£åœ¨è®¿é—®æ—§å…¥å£æ˜ å°„è·¯å¾„ã€‚å»ºè®®ä½¿ç”¨æ–°æŽ¥å£ï¼š/api/rooms/&lt;room_slug&gt;/...
         </div>
         {% endif %}
 
         <section id="authSection" class="panel" {% if authorized %}hidden{% endif %}>
-            <h2>ÊäÈë·¿¼ä¿ÚÁî</h2>
+            <h2>è¾“å…¥æˆ¿é—´å£ä»¤</h2>
             <form id="authForm" class="inline-form">
-                <input type="password" id="authPasscode" minlength="4" maxlength="64" placeholder="ÇëÊäÈë¿ÚÁî" required>
-                <button type="submit" class="btn-primary">½âËø·¿¼ä</button>
+                <input type="password" id="authPasscode" minlength="4" maxlength="64" placeholder="è¯·è¾“å…¥å£ä»¤" required>
+                <button type="submit" class="btn-primary">è§£é”æˆ¿é—´</button>
             </form>
         </section>
 
         <section id="workspace" {% if not authorized %}hidden{% endif %}>
             <section class="panel upload-panel">
-                <h2>ÉÏ´«×ÊÁÏ</h2>
+                <h2>ä¸Šä¼ èµ„æ–™</h2>
                 <form id="uploadForm" class="inline-form">
                     <input type="file" id="fileInput" accept=".jpg,.jpeg,.png,.gif,.webp,.pdf" required>
-                    <button type="submit" class="btn-primary" id="uploadButton">ÉÏ´«</button>
+                    <button type="submit" class="btn-primary" id="uploadButton">ä¸Šä¼ </button>
                 </form>
-                <p class="tips">Ö§³Ö JPG/JPEG/PNG/GIF/WEBP/PDF£¬µ¥ÎÄ¼þ×î´ó 10MB¡£PDF »á×Ô¶¯Éú³ÉÕªÒª¡£</p>
+                <p class="tips">æ”¯æŒ JPG/JPEG/PNG/GIF/WEBP/PDFï¼Œå•æ–‡ä»¶æœ€å¤§ 10MBã€‚PDF ä¼šè‡ªåŠ¨ç”Ÿæˆæ‘˜è¦ã€‚</p>
             </section>
 
             <section class="panel">
                 <div class="panel-title-row">
-                    <h2>ÎÄ¼þÁÐ±í</h2>
-                    <button id="refreshButton" class="btn-secondary">Ë¢ÐÂ</button>
+                    <h2>æ–‡ä»¶åˆ—è¡¨</h2>
+                    <button id="refreshButton" class="btn-secondary">åˆ·æ–°</button>
                 </div>
-                <div id="loading" class="loading" hidden>¼ÓÔØÖÐ...</div>
-                <div id="emptyState" class="empty" hidden>µ±Ç°·¿¼ä»¹Ã»ÓÐÎÄ¼þ¡£</div>
+                <div id="loading" class="loading" hidden>åŠ è½½ä¸­...</div>
+                <div id="emptyState" class="empty" hidden>å½“å‰æˆ¿é—´è¿˜æ²¡æœ‰æ–‡ä»¶ã€‚</div>
                 <div id="fileList" class="file-list"></div>
             </section>
         </section>
@@ -57,4 +57,4 @@
 
     <script src="{{ url_for('static', filename='js/room.js') }}"></script>
 </body>
-</html>
+</html>
