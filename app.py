@@ -2,6 +2,7 @@ from flask import Flask, render_template, request, jsonify, send_from_directory
 from werkzeug.utils import secure_filename
 import os
 import uuid
+from datetime import datetime
 
 app = Flask(__name__)
 
@@ -54,6 +55,75 @@ def get_safe_filename(original_filename):
 def index():
     """主页"""
     return render_template('index.html')
+
+
+@app.route('/files')
+def files_page():
+    """文件列表页面"""
+    return render_template('files.html')
+
+
+@app.route('/api/files', methods=['GET'])
+def list_files():
+    """获取文件列表 API"""
+    try:
+        files = []
+        upload_folder = app.config['UPLOAD_FOLDER']
+
+        # 确保目录存在
+        if not os.path.exists(upload_folder):
+            return jsonify({'success': True, 'files': []})
+
+        # 遍历上传目录
+        for filename in os.listdir(upload_folder):
+            filepath = os.path.join(upload_folder, filename)
+
+            # 跳过目录和隐藏文件
+            if os.path.isdir(filepath) or filename.startswith('.'):
+                continue
+
+            # 获取文件信息
+            file_stat = os.stat(filepath)
+            file_size = file_stat.st_size
+            file_mtime = datetime.fromtimestamp(file_stat.st_mtime)
+
+            # 判断文件类型
+            ext = filename.rsplit('.', 1)[1].lower() if '.' in filename else ''
+            file_type = 'image' if ext in ['jpg', 'jpeg', 'png', 'gif', 'webp'] else 'pdf'
+
+            files.append({
+                'filename': filename,
+                'size': file_size,
+                'size_mb': round(file_size / (1024 * 1024), 2),
+                'modified': file_mtime.strftime('%Y-%m-%d %H:%M:%S'),
+                'type': file_type,
+                'url': request.host_url.rstrip('/') + f'/uploads/{filename}'
+            })
+
+        # 按修改时间倒序排序
+        files.sort(key=lambda x: x['modified'], reverse=True)
+
+        return jsonify({'success': True, 'files': files})
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@app.route('/api/files/<filename>', methods=['DELETE'])
+def delete_file(filename):
+    """删除文件 API"""
+    try:
+        filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+
+        # 检查文件是否存在
+        if not os.path.exists(filepath):
+            return jsonify({'success': False, 'message': '文件不存在'}), 404
+
+        # 删除文件
+        os.remove(filepath)
+
+        return jsonify({'success': True, 'message': '文件已删除'})
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
 
 
 @app.route('/upload', methods=['POST'])
