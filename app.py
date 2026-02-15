@@ -795,6 +795,83 @@ def sanitize_summary_source_text(text: str) -> str:
     return cleaned
 
 
+def try_parse_summary_json(raw_content: str) -> Optional[Dict[str, Any]]:
+    if not raw_content:
+        return None
+
+    candidates = []
+
+    # Original content.
+    candidates.append(raw_content.strip())
+
+    # Remove markdown fences.
+    fence_cleaned = raw_content.strip()
+    fence_cleaned = re.sub(r"^```(?:json)?", "", fence_cleaned).strip()
+    fence_cleaned = re.sub(r"```$", "", fence_cleaned).strip()
+    candidates.append(fence_cleaned)
+
+    # Extract JSON object substring.
+    if "{" in raw_content and "}" in raw_content:
+        start = raw_content.find("{")
+        end = raw_content.rfind("}")
+        if start >= 0 and end > start:
+            candidates.append(raw_content[start : end + 1].strip())
+
+    for candidate in candidates:
+        if not candidate:
+            continue
+        try:
+            parsed = json.loads(candidate)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            continue
+
+    return None
+
+
+def fallback_summary_from_text(raw_content: str) -> Dict[str, Any]:
+    cleaned = sanitize_summary_source_text(raw_content)
+    if not cleaned:
+        raise RuntimeError("Model returned empty content.")
+
+    # Split by common sentence delimiters and preserve useful fragments.
+    parts = [p.strip() for p in re.split(r"[。！？.!?；;\n\r]+", cleaned) if p.strip()]
+    if not parts:
+        parts = [cleaned]
+
+    one_line = parts[0][:140]
+    key_points = (parts[:3] + ["补充要点 1", "补充要点 2", "补充要点 3"])[:3]
+
+    # Basic keyword extraction by token frequency and length.
+    tokens = re.findall(r"[\u4e00-\u9fffA-Za-z0-9]{2,16}", cleaned)
+    seen = set()
+    keywords = []
+    for token in tokens:
+        lowered = token.lower()
+        if lowered in seen:
+            continue
+        seen.add(lowered)
+        keywords.append(token)
+        if len(keywords) >= 5:
+            break
+    if len(keywords) < 5:
+        keywords.extend(["主题", "重点", "结论", "术语", "行动"][: 5 - len(keywords)])
+
+    suggested_actions = [
+        "先根据一句话摘要确认主题边界",
+        "按关键点整理 3 条可复述笔记",
+        "基于关键词制定下一步学习清单",
+    ]
+
+    return {
+        "one_line_summary": one_line,
+        "key_points": key_points,
+        "keywords": keywords,
+        "suggested_actions": suggested_actions,
+    }
+
+
 def generate_ai_summary(text: str) -> Dict[str, Any]:
     api_key = current_app.config.get("OPENAI_API_KEY", "")
     if not api_key:
@@ -837,18 +914,32 @@ def generate_ai_summary(text: str) -> Dict[str, Any]:
 
     completion = client.chat.completions.create(**request_payload)
 
-    raw_content = completion.choices[0].message.content or "{}"
+    raw_content = completion.choices[0].message.content
+    if isinstance(raw_content, list):
+        text_parts = []
+        for item in raw_content:
+            if isinstance(item, dict):
+                text_parts.append(str(item.get("text", "")))
+            else:
+                text_parts.append(str(item))
+        raw_content = "\n".join([p for p in text_parts if p]).strip()
+    elif raw_content is None:
+        raw_content = ""
+    else:
+        raw_content = str(raw_content)
 
-    try:
-        parsed_json = json.loads(raw_content)
-    except json.JSONDecodeError:
-        # Some proxy providers return JSON wrapped in markdown/code fences.
-        cleaned = raw_content.strip()
-        cleaned = re.sub(r"^```(?:json)?", "", cleaned).strip()
-        cleaned = re.sub(r"```$", "", cleaned).strip()
-        parsed_json = json.loads(cleaned or "{}")
+    parsed_json = try_parse_summary_json(raw_content)
+    if parsed_json is not None:
+        return normalize_summary_json(parsed_json)
 
-    return normalize_summary_json(parsed_json)
+    # Proxy providers may return plain text; fallback to resilient text parsing.
+    app.logger.warning(
+        "Summary response was not valid JSON; fallback parser activated. base_url=%s model=%s raw_preview=%s",
+        base_url,
+        model_name,
+        raw_content[:180],
+    )
+    return normalize_summary_json(fallback_summary_from_text(raw_content))
 
 
 def process_pdf_summary(summary_job_id: int) -> None:
