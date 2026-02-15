@@ -49,3 +49,8 @@ Thumbs.db
 # 测试文件
 test_image.jpg
 *.log
+
+app.db
+.pytest_cache/
+post_deploy_report.md
+daily_report.md

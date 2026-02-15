@@ -1,0 +1,37 @@
+name: daily-metrics-report
+
+on:
+  schedule:
+    - cron: '0 1 * * *'
+  workflow_dispatch:
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    if: secrets.DATABASE_URL != ''
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Generate report
+        run: |
+          python scripts/daily_report.py \
+            --database-url "${{ secrets.DATABASE_URL }}" \
+            --output daily_report.md \
+            --webhook-url "${{ secrets.DAILY_REPORT_WEBHOOK }}"
+
+      - name: Upload report artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: daily-report
+          path: daily_report.md

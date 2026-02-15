@@ -1,0 +1,248 @@
+:root {
+    color-scheme: light;
+}
+
+* {
+    box-sizing: border-box;
+}
+
+body {
+    margin: 0;
+    font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: radial-gradient(circle at 20% 20%, #eef5ff, #f8fbff 45%, #f5f3ff 100%);
+    color: #1f2a44;
+}
+
+.container {
+    width: min(1040px, 94vw);
+    margin: 1.5rem auto 2.5rem;
+    display: grid;
+    gap: 1rem;
+}
+
+.header {
+    background: #ffffff;
+    border-radius: 16px;
+    padding: 1rem 1.2rem;
+    box-shadow: 0 8px 20px rgba(31, 42, 68, 0.08);
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 1rem;
+}
+
+.header h1 {
+    margin: 0 0 0.4rem;
+}
+
+.header p {
+    margin: 0.2rem 0;
+}
+
+.home-link {
+    text-decoration: none;
+    color: #1361ff;
+    font-weight: 600;
+}
+
+.panel {
+    background: #ffffff;
+    border-radius: 16px;
+    padding: 1rem 1.2rem;
+    box-shadow: 0 8px 20px rgba(31, 42, 68, 0.08);
+}
+
+.inline-form {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.6rem;
+    align-items: center;
+}
+
+input[type="password"],
+input[type="file"] {
+    height: 40px;
+    border: 1px solid #d2d8e8;
+    border-radius: 10px;
+    padding: 0 0.7rem;
+    font-size: 0.95rem;
+}
+
+input[type="file"] {
+    padding-top: 0.48rem;
+}
+
+button {
+    border: none;
+    border-radius: 10px;
+    height: 40px;
+    padding: 0 0.95rem;
+    cursor: pointer;
+}
+
+.btn-primary {
+    background: #1361ff;
+    color: #fff;
+}
+
+.btn-secondary {
+    background: #edf2ff;
+    color: #1f2a44;
+}
+
+.panel-title-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 0.8rem;
+}
+
+.loading,
+.empty {
+    margin-top: 0.8rem;
+    color: #5f6a85;
+}
+
+.file-list {
+    margin-top: 0.8rem;
+    display: grid;
+    gap: 0.75rem;
+}
+
+.file-card {
+    border: 1px solid #e0e6f2;
+    border-radius: 14px;
+    padding: 0.9rem;
+    display: grid;
+    gap: 0.5rem;
+    background: #fcfdff;
+}
+
+.file-meta {
+    display: grid;
+    gap: 0.1rem;
+    color: #5f6a85;
+    font-size: 0.9rem;
+}
+
+.file-actions {
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+}
+
+.file-actions a,
+.file-actions button {
+    text-decoration: none;
+    border: none;
+    border-radius: 8px;
+    padding: 0.35rem 0.75rem;
+    font-size: 0.9rem;
+    cursor: pointer;
+}
+
+.file-actions a {
+    background: #edf2ff;
+    color: #1f2a44;
+}
+
+.file-actions .danger {
+    background: #ffeaea;
+    color: #b02424;
+}
+
+.badge {
+    display: inline-flex;
+    align-items: center;
+    width: fit-content;
+    font-size: 0.82rem;
+    border-radius: 999px;
+    padding: 0.2rem 0.6rem;
+    font-weight: 600;
+}
+
+.badge.pending,
+.badge.running {
+    background: #fff4d6;
+    color: #8a5b00;
+}
+
+.badge.done {
+    background: #e9f9ee;
+    color: #196b35;
+}
+
+.badge.failed {
+    background: #ffeaea;
+    color: #b02424;
+}
+
+.badge.not_applicable {
+    background: #edf2ff;
+    color: #3a4f86;
+}
+
+.summary {
+    border: 1px solid #e1e8f5;
+    border-radius: 12px;
+    padding: 0.7rem;
+    background: #ffffff;
+}
+
+.summary h4 {
+    margin: 0 0 0.35rem;
+    font-size: 0.92rem;
+}
+
+.summary ul {
+    margin: 0.25rem 0 0.5rem;
+    padding-left: 1.2rem;
+}
+
+.summary p {
+    margin: 0.25rem 0;
+}
+
+.message {
+    border-radius: 10px;
+    padding: 0.75rem 0.85rem;
+    border: 1px solid #f0c5c5;
+    background: #fff2f2;
+    color: #a12424;
+}
+
+.message.success {
+    border-color: #b8e6c8;
+    background: #f0f8f4;
+    color: #1f6a35;
+}
+
+.deprecated-banner {
+    border-radius: 10px;
+    padding: 0.65rem 0.8rem;
+    background: #fff7e9;
+    border: 1px solid #f0dca2;
+    color: #7e5a00;
+}
+
+.tips {
+    color: #5f6a85;
+    font-size: 0.9rem;
+}
+
+@media (max-width: 760px) {
+    .header {
+        flex-direction: column;
+    }
+
+    .inline-form {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    button,
+    input[type="password"],
+    input[type="file"] {
+        width: 100%;
+    }
+}

@@ -1,0 +1,64 @@
+name: ci-and-railway
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run tests
+        run: pytest -q
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && secrets.RAILWAY_DEPLOY_HOOK != ''
+    steps:
+      - name: Trigger Railway Deploy Hook
+        run: curl -fsS -X POST "${{ secrets.RAILWAY_DEPLOY_HOOK }}"
+
+  post_deploy_check:
+    runs-on: ubuntu-latest
+    needs: deploy
+    if: needs.deploy.result == 'success' && secrets.APP_BASE_URL != ''
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Wait for deployment warmup
+        run: sleep 30
+
+      - name: Run post-deploy check
+        run: |
+          python scripts/post_deploy_check.py --base-url "${{ secrets.APP_BASE_URL }}" --report-file post_deploy_report.md
+
+      - name: Upload report artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: post-deploy-report
+          path: post_deploy_report.md

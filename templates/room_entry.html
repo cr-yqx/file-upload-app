@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI 学习资料房间</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/rooms.css') }}">
+</head>
+<body data-default-room-slug="{{ default_room_slug }}">
+    <main class="container">
+        <header class="hero">
+            <h1>AI 学习资料房间</h1>
+            <p>创建房间并分享链接，同学上传 PDF 后自动生成摘要。</p>
+        </header>
+
+        <section class="panel">
+            <h2>创建房间</h2>
+            <form id="createRoomForm" class="form-grid">
+                <label>
+                    房间名称
+                    <input type="text" id="createRoomName" maxlength="80" placeholder="例如：机器学习读书会" required>
+                </label>
+                <label>
+                    房间标识（可选）
+                    <input type="text" id="createRoomSlug" maxlength="40" placeholder="例如：ml-study-group">
+                </label>
+                <label>
+                    房间口令
+                    <input type="password" id="createRoomPasscode" minlength="4" maxlength="64" placeholder="至少 4 位" required>
+                </label>
+                <button type="submit" class="btn-primary">创建并进入房间</button>
+            </form>
+            <div id="createResult" class="result" hidden></div>
+        </section>
+
+        <section class="panel">
+            <h2>加入房间</h2>
+            <form id="joinRoomForm" class="form-grid">
+                <label>
+                    房间标识
+                    <input type="text" id="joinRoomSlug" maxlength="40" placeholder="例如：ml-study-group" required>
+                </label>
+                <label>
+                    房间口令
+                    <input type="password" id="joinRoomPasscode" minlength="4" maxlength="64" required>
+                </label>
+                <button type="submit" class="btn-secondary">验证后进入</button>
+            </form>
+            <p class="tips">兼容旧地址：<a href="/files">/files</a> 会自动跳转到默认房间。</p>
+        </section>
+
+        <div id="globalMessage" class="message" hidden></div>
+    </main>
+
+    <script src="{{ url_for('static', filename='js/rooms.js') }}"></script>
+</body>
+</html>
