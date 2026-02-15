@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>文件上传</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <div class="container">
+        <h1>文件上传</h1>
+        <p class="subtitle">支持图片（JPG, PNG, GIF, WEBP）和 PDF 文件，单文件最大 10MB</p>
+
+        <div class="upload-box">
+            <input type="file" id="fileInput" accept=".jpg,.jpeg,.png,.gif,.webp,.pdf">
+            <button id="uploadBtn" disabled>上传文件</button>
+        </div>
+
+        <div id="fileInfo" class="file-info"></div>
+
+        <div id="progressContainer" class="progress-container" style="display: none;">
+            <div class="progress-bar">
+                <div id="progressBar" class="progress-fill"></div>
+            </div>
+            <div id="progressText" class="progress-text">0%</div>
+        </div>
+
+        <div id="message" class="message"></div>
+
+        <div id="resultContainer" class="result-container" style="display: none;">
+            <h3>上传成功</h3>
+            <div id="resultInfo"></div>
+        </div>
+    </div>
+
+    <script src="{{ url_for('static', filename='js/upload.js') }}"></script>
+</body>
+</html>
