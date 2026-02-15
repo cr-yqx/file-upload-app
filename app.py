@@ -83,13 +83,16 @@ def upload_file():
     # 获取文件大小
     file_size = os.path.getsize(filepath)
 
+    # 构建完整的文件 URL
+    file_url = request.host_url.rstrip('/') + f'/uploads/{filename}'
+
     # 返回成功响应
     return jsonify({
         'success': True,
         'message': '文件上传成功',
         'filename': filename,
         'size': file_size,
-        'url': f'/uploads/{filename}'
+        'url': file_url
     })
 
 
