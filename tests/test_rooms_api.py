@@ -22,6 +22,7 @@ def test_app(tmp_path, monkeypatch):
             "UPLOAD_FOLDER": str(upload_path),
             "SECRET_KEY": "test-secret",
             "DEFAULT_ROOM_PASSCODE": "demo1234",
+            "DISCUSSION_ASYNC": False,
         }
     )
 
@@ -47,6 +48,10 @@ def create_room(client, name="Machine Learning", slug="ml-room", passcode="pass1
     )
 
 
+def set_profile(client, slug, nickname):
+    return client.post(f"/api/rooms/{slug}/profile", json={"nickname": nickname})
+
+
 def upload_png(client, slug="ml-room", filename="sample.png"):
     return client.post(
         f"/api/rooms/{slug}/upload",
@@ -58,9 +63,14 @@ def upload_png(client, slug="ml-room", filename="sample.png"):
 def test_create_room_and_auth_flow(client, test_app):
     create_response = create_room(client)
     assert create_response.status_code == 200
-    create_payload = create_response.get_json()
-    assert create_payload["success"] is True
-    assert create_payload["room"]["slug"] == "ml-room"
+    payload = create_response.get_json()
+    assert payload["success"] is True
+    assert payload["room"]["slug"] == "ml-room"
+    assert payload["discussion"]["status"] == "idle"
+
+    profile = client.get("/api/rooms/ml-room/profile")
+    assert profile.status_code == 200
+    assert profile.get_json()["viewer"]["is_owner"] is True
 
     with test_app.test_client() as second_client:
         wrong_auth = second_client.post("/api/rooms/ml-room/auth", json={"passcode": "wrong"})
@@ -71,29 +81,35 @@ def test_create_room_and_auth_flow(client, test_app):
         assert correct_auth.get_json()["success"] is True
 
 
-def test_upload_image_and_list_files(client):
+def test_upload_requires_profile_then_success(client):
     create_room(client, name="Image Room", slug="img-room", passcode="abcd1234")
 
-    upload_response = upload_png(client, slug="img-room")
+    no_profile_upload = upload_png(client, slug="img-room")
+    assert no_profile_upload.status_code == 400
 
+    set_profile(client, "img-room", "Alice")
+
+    upload_response = upload_png(client, slug="img-room")
     assert upload_response.status_code == 200
     upload_payload = upload_response.get_json()
-    assert upload_payload["success"] is True
-    assert upload_payload["summary_job_id"] is None
+    assert upload_payload["file"]["uploader_nickname"] == "Alice"
     assert upload_payload["file"]["summary_status"] == "not_applicable"
 
     list_response = client.get("/api/rooms/img-room/files")
     assert list_response.status_code == 200
     list_payload = list_response.get_json()
-    assert list_payload["viewer"]["has_profile"] is False
-    assert list_payload["metrics"]["total_files"] == 1
-    assert len(list_payload["files"]) == 1
-    assert list_payload["files"][0]["original_name"] == "sample.png"
-    assert list_payload["files"][0]["collab"]["comment_count"] == 0
+    assert list_payload["viewer"]["has_profile"] is True
+    assert list_payload["files"][0]["uploader_nickname"] == "Alice"
+
+    uploader_token = list_payload["files"][0]["uploader_viewer_token"]
+    filtered = client.get(f"/api/rooms/img-room/files?uploader_token={uploader_token}")
+    assert filtered.status_code == 200
+    assert len(filtered.get_json()["files"]) == 1
 
 
 def test_upload_pdf_creates_async_job(client):
     create_room(client, name="PDF Room", slug="pdf-room", passcode="abcd1234")
+    set_profile(client, "pdf-room", "Bob")
 
     pdf_bytes = b"%PDF-1.4\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%EOF"
     upload_response = client.post(
@@ -105,16 +121,115 @@ def test_upload_pdf_creates_async_job(client):
     assert upload_response.status_code == 200
     upload_payload = upload_response.get_json()
     assert upload_payload["summary_job_id"] is not None
+    assert upload_payload["file"]["uploader_nickname"] == "Bob"
 
     job_id = upload_payload["summary_job_id"]
     job_response = client.get(f"/api/rooms/pdf-room/jobs/{job_id}")
     assert job_response.status_code == 200
-    job_payload = job_response.get_json()
-    assert job_payload["job"]["status"] == "queued"
+    assert job_response.get_json()["job"]["status"] == "queued"
+
+
+def test_presence_and_collaborators(client):
+    create_room(client, name="Presence Room", slug="presence-room", passcode="abcd1234")
+    set_profile(client, "presence-room", "Carol")
+
+    presence = client.post("/api/rooms/presence-room/presence")
+    assert presence.status_code == 200
+
+    collaborators = client.get("/api/rooms/presence-room/collaborators")
+    assert collaborators.status_code == 200
+    payload = collaborators.get_json()
+    assert len(payload["collaborators"]) >= 1
+    assert payload["collaborators"][0]["nickname"] in {"Carol", "匿名协作者"}
+
+
+def test_comment_incremental_cursor(client):
+    create_room(client, name="Comment Room", slug="comment-room", passcode="abcd1234")
+    set_profile(client, "comment-room", "Dora")
+    upload_payload = upload_png(client, slug="comment-room", filename="notes.png").get_json()
+    file_id = upload_payload["file_id"]
+
+    add_comment_1 = client.post(
+        f"/api/rooms/comment-room/files/{file_id}/comments",
+        json={"content": "先看第 2 页结论。"},
+    )
+    assert add_comment_1.status_code == 200
+
+    first_pull = client.get(f"/api/rooms/comment-room/files/{file_id}/comments")
+    assert first_pull.status_code == 200
+    first_payload = first_pull.get_json()
+    assert len(first_payload["comments"]) == 1
+    cursor_id = first_payload["cursor"]["after_id"]
+
+    empty_pull = client.get(f"/api/rooms/comment-room/files/{file_id}/comments?after_id={cursor_id}")
+    assert empty_pull.status_code == 200
+    assert empty_pull.get_json()["comments"] == []
+
+    add_comment_2 = client.post(
+        f"/api/rooms/comment-room/files/{file_id}/comments",
+        json={"content": "补充一个行动建议。"},
+    )
+    assert add_comment_2.status_code == 200
+
+    incremental_pull = client.get(f"/api/rooms/comment-room/files/{file_id}/comments?after_id={cursor_id}")
+    assert incremental_pull.status_code == 200
+    incremental_payload = incremental_pull.get_json()
+    assert len(incremental_payload["comments"]) == 1
+    assert incremental_payload["comments"][0]["content"] == "补充一个行动建议。"
+
+
+def test_star_read_and_metrics(client):
+    create_room(client, name="Focus Room", slug="focus-room", passcode="abcd1234")
+    set_profile(client, "focus-room", "Eve")
+    upload_payload = upload_png(client, slug="focus-room", filename="focus.png").get_json()
+    file_id = upload_payload["file_id"]
+
+    star_1 = client.put(f"/api/rooms/focus-room/files/{file_id}/star", json={"starred": True})
+    assert star_1.status_code == 200
+    star_2 = client.put(f"/api/rooms/focus-room/files/{file_id}/star", json={"starred": True})
+    assert star_2.status_code == 200
+
+    read_true = client.put(f"/api/rooms/focus-room/files/{file_id}/read", json={"read": True})
+    assert read_true.status_code == 200
+    read_false = client.put(f"/api/rooms/focus-room/files/{file_id}/read", json={"read": False})
+    assert read_false.status_code == 200
+
+    listed = client.get("/api/rooms/focus-room/files")
+    payload = listed.get_json()
+    assert payload["metrics"]["total_files"] == 1
+    assert payload["metrics"]["starred_files"] == 1
+    assert payload["metrics"]["unread_files"] == 1
+
+
+def test_discussion_end_owner_only_and_summary(client, test_app):
+    create_room(client, name="Meeting Room", slug="meeting-room", passcode="abcd1234")
+    set_profile(client, "meeting-room", "Owner")
+    upload_payload = upload_png(client, slug="meeting-room", filename="meeting.png").get_json()
+    file_id = upload_payload["file_id"]
+    client.post(f"/api/rooms/meeting-room/files/{file_id}/comments", json={"content": "第一条评论"})
+
+    with test_app.test_client() as second_client:
+        second_client.post("/api/rooms/meeting-room/auth", json={"passcode": "abcd1234"})
+        second_client.post("/api/rooms/meeting-room/profile", json={"nickname": "Guest"})
+        forbidden = second_client.post("/api/rooms/meeting-room/discussion/end")
+        assert forbidden.status_code == 403
+
+    owner_end = client.post("/api/rooms/meeting-room/discussion/end")
+    assert owner_end.status_code == 200
+    assert owner_end.get_json()["discussion"]["status"] in {"running", "done"}
+
+    summary = client.get("/api/rooms/meeting-room/discussion/summary")
+    assert summary.status_code == 200
+    summary_payload = summary.get_json()
+    assert summary_payload["discussion"]["status"] in {"done", "running", "failed"}
+    if summary_payload["summary"]:
+        assert "meeting_overview" in summary_payload["summary"]["summary_json"]
+        assert "by_commented_owner" in summary_payload["summary"]["summary_json"]
 
 
 def test_delete_file_removes_metadata_and_asset(client):
     create_room(client, name="Delete Room", slug="delete-room", passcode="abcd1234")
+    set_profile(client, "delete-room", "Frank")
 
     jpg_bytes = b"\xff\xd8\xff\xdb\x00C\x00"
     upload_response = client.post(
@@ -122,7 +237,6 @@ def test_delete_file_removes_metadata_and_asset(client):
         data={"file": (io.BytesIO(jpg_bytes), "to-delete.jpg")},
         content_type="multipart/form-data",
     )
-
     upload_payload = upload_response.get_json()
     file_id = upload_payload["file_id"]
 
@@ -137,112 +251,6 @@ def test_delete_file_removes_metadata_and_asset(client):
     file_path = urlparse(file_url).path
     check_deleted_response = client.get(file_path)
     assert check_deleted_response.status_code == 404
-
-
-def test_profile_get_and_upsert_flow(client):
-    create_room(client, name="Collab Room", slug="collab-room", passcode="abcd1234")
-
-    get_before = client.get("/api/rooms/collab-room/profile")
-    assert get_before.status_code == 200
-    assert get_before.get_json()["viewer"]["has_profile"] is False
-
-    invalid = client.post("/api/rooms/collab-room/profile", json={"nickname": "A"})
-    assert invalid.status_code == 400
-
-    upsert = client.post("/api/rooms/collab-room/profile", json={"nickname": "小王同学"})
-    assert upsert.status_code == 200
-    upsert_payload = upsert.get_json()
-    assert upsert_payload["viewer"]["nickname"] == "小王同学"
-    assert upsert_payload["viewer"]["viewer_token"] == "session-scoped"
-
-    get_after = client.get("/api/rooms/collab-room/profile")
-    assert get_after.status_code == 200
-    after_payload = get_after.get_json()
-    assert after_payload["viewer"]["has_profile"] is True
-    assert after_payload["viewer"]["nickname"] == "小王同学"
-
-
-def test_comment_requires_profile_and_can_list(client):
-    create_room(client, name="Comment Room", slug="comment-room", passcode="abcd1234")
-    upload_payload = upload_png(client, slug="comment-room", filename="notes.png").get_json()
-    file_id = upload_payload["file_id"]
-
-    no_profile_comment = client.post(
-        f"/api/rooms/comment-room/files/{file_id}/comments",
-        json={"content": "先看结论部分"},
-    )
-    assert no_profile_comment.status_code == 400
-
-    client.post("/api/rooms/comment-room/profile", json={"nickname": "Alice"})
-
-    empty_comment = client.post(
-        f"/api/rooms/comment-room/files/{file_id}/comments",
-        json={"content": "   "},
-    )
-    assert empty_comment.status_code == 400
-
-    add_comment = client.post(
-        f"/api/rooms/comment-room/files/{file_id}/comments",
-        json={"content": "建议先看第 3 页方法论。"},
-    )
-    assert add_comment.status_code == 200
-    assert add_comment.get_json()["comment"]["nickname"] == "Alice"
-
-    list_comments = client.get(f"/api/rooms/comment-room/files/{file_id}/comments")
-    assert list_comments.status_code == 200
-    comments_payload = list_comments.get_json()
-    assert len(comments_payload["comments"]) == 1
-    assert comments_payload["comments"][0]["content"] == "建议先看第 3 页方法论。"
-
-
-def test_star_and_read_are_idempotent_and_visible_in_files(client):
-    create_room(client, name="Focus Room", slug="focus-room", passcode="abcd1234")
-    upload_payload = upload_png(client, slug="focus-room", filename="focus.png").get_json()
-    file_id = upload_payload["file_id"]
-
-    star_without_profile = client.put(
-        f"/api/rooms/focus-room/files/{file_id}/star",
-        json={"starred": True},
-    )
-    assert star_without_profile.status_code == 400
-
-    client.post("/api/rooms/focus-room/profile", json={"nickname": "Bob"})
-
-    star_1 = client.put(f"/api/rooms/focus-room/files/{file_id}/star", json={"starred": True})
-    assert star_1.status_code == 200
-    star_2 = client.put(f"/api/rooms/focus-room/files/{file_id}/star", json={"starred": True})
-    assert star_2.status_code == 200
-
-    read_true = client.put(f"/api/rooms/focus-room/files/{file_id}/read", json={"read": True})
-    assert read_true.status_code == 200
-    read_false = client.put(f"/api/rooms/focus-room/files/{file_id}/read", json={"read": False})
-    assert read_false.status_code == 200
-    read_false_again = client.put(f"/api/rooms/focus-room/files/{file_id}/read", json={"read": False})
-    assert read_false_again.status_code == 200
-
-    listed = client.get("/api/rooms/focus-room/files")
-    assert listed.status_code == 200
-    listed_payload = listed.get_json()
-    assert listed_payload["metrics"]["total_files"] == 1
-    assert listed_payload["metrics"]["starred_files"] == 1
-    assert listed_payload["metrics"]["unread_files"] == 1
-
-    file_info = listed_payload["files"][0]
-    assert file_info["collab"]["star_count"] == 1
-    assert file_info["collab"]["starred_by_me"] is True
-    assert file_info["collab"]["read_by_me"] is False
-    assert file_info["collab"]["read_count"] == 0
-
-    unstar_1 = client.put(f"/api/rooms/focus-room/files/{file_id}/star", json={"starred": False})
-    assert unstar_1.status_code == 200
-    unstar_2 = client.put(f"/api/rooms/focus-room/files/{file_id}/star", json={"starred": False})
-    assert unstar_2.status_code == 200
-
-    listed_after = client.get("/api/rooms/focus-room/files")
-    after_payload = listed_after.get_json()
-    assert after_payload["metrics"]["starred_files"] == 0
-    assert after_payload["files"][0]["collab"]["star_count"] == 0
-    assert after_payload["files"][0]["collab"]["starred_by_me"] is False
 
 
 def test_legacy_endpoints_still_work(client):

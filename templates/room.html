@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{{ room.name }} - AI 学习资料房间</title>
+    <title>{{ room.name }} - 会议协作房间</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
@@ -19,7 +19,7 @@
     <main class="room-shell">
         <header class="topbar glass">
             <div class="room-meta">
-                <p class="eyebrow">AI Study Room</p>
+                <p class="eyebrow">Meeting Collaboration Room</p>
                 <h1>{{ room.name }}</h1>
                 <div class="meta-line">
                     <span class="chip">房间标识：{{ room.slug }}</span>
@@ -52,20 +52,20 @@
         </section>
 
         <section id="workspace" {% if not authorized %}hidden{% endif %}>
-            <aside class="left-column">
+            <aside class="left-column sticky-column">
                 <section class="glass card upload-card">
                     <h2>上传资料</h2>
                     <form id="uploadForm" class="stack-form">
                         <input type="file" id="fileInput" accept=".jpg,.jpeg,.png,.gif,.webp,.pdf" required>
                         <button type="submit" class="btn-primary" id="uploadButton">上传</button>
                     </form>
-                    <p class="tips">支持 JPG/JPEG/PNG/GIF/WEBP/PDF，单文件最大 10MB。PDF 会自动生成摘要。</p>
+                    <p class="tips">上传前必须先设置昵称。支持 JPG/JPEG/PNG/GIF/WEBP/PDF，单文件最大 10MB。</p>
                 </section>
 
                 <section class="glass card">
-                    <h3>协作身份</h3>
+                    <h3>我的协作身份</h3>
                     <p id="viewerNicknameValue" class="nickname-value">未设置昵称</p>
-                    <p class="tips">设置昵称后可使用评论、星标、已读能力。</p>
+                    <div id="myUploadShortcuts" class="my-upload-shortcuts"></div>
                     <button id="editNicknameButton" class="btn-secondary" type="button">设置昵称</button>
                 </section>
 
@@ -79,21 +79,71 @@
                         <input type="checkbox" id="onlyUnreadToggle">
                         <span>仅看未读</span>
                     </label>
+                    <label class="switch-row uploader-filter">
+                        <span>按协作者上传筛选</span>
+                        <select id="uploaderFilterSelect">
+                            <option value="">全部协作者</option>
+                        </select>
+                    </label>
                     <button id="clearFiltersButton" class="btn-ghost" type="button">清除筛选</button>
                 </section>
             </aside>
 
-            <section class="right-column">
+            <section class="middle-column">
+                <section class="glass card discussion-card">
+                    <div class="discussion-header">
+                        <h2>会议总结</h2>
+                        <button id="endDiscussionButton" type="button" class="btn-primary" hidden>结束讨论并生成总结</button>
+                    </div>
+                    <p id="discussionStatusText" class="tips">讨论尚未结束。</p>
+                    <div id="discussionSummaryContainer" class="discussion-summary-container">
+                        <p class="summary-placeholder">讨论结束后，这里会按“被评论者”分组展示可认领总结。</p>
+                    </div>
+                </section>
+
                 <section class="glass card list-card">
                     <div class="panel-title-row">
-                        <h2>文件列表</h2>
+                        <h2>文件详情与摘要</h2>
                         <button id="refreshButton" class="btn-secondary">刷新</button>
                     </div>
                     <div id="loading" class="loading" hidden>加载中...</div>
-                    <div id="emptyState" class="empty" hidden>当前房间还没有文件。</div>
+                    <div id="emptyState" class="empty" hidden>当前筛选条件下没有文件。</div>
                     <div id="fileList" class="file-list"></div>
                 </section>
             </section>
+
+            <aside class="right-column sticky-column">
+                <section class="glass card collaborators-card">
+                    <h3>协作者</h3>
+                    <div id="collaboratorPriorityRow" class="priority-collaborators"></div>
+                    <div id="collaboratorList" class="collaborator-list"></div>
+                </section>
+
+                <section class="glass card file-catalog-card">
+                    <h3>文件分类</h3>
+                    <div class="catalog-section">
+                        <p>PDF 文件</p>
+                        <div id="pdfCatalogList" class="catalog-list"></div>
+                    </div>
+                    <div class="catalog-section">
+                        <p>图片文件</p>
+                        <div id="imageCatalogList" class="catalog-list"></div>
+                    </div>
+                </section>
+
+                <section class="glass card comments-card">
+                    <div class="comments-header">
+                        <h3>文件评论</h3>
+                        <span id="newCommentBadge" class="new-comment-badge" hidden>有新评论</span>
+                    </div>
+                    <p id="commentFileMeta" class="comment-file-meta">请先选择一个文件。</p>
+                    <div id="commentList" class="comment-list"></div>
+                    <form id="commentForm" class="comment-form">
+                        <textarea id="commentInput" maxlength="300" placeholder="写下你的讨论观点..." required></textarea>
+                        <button id="submitCommentButton" type="submit" class="btn-primary">发布评论</button>
+                    </form>
+                </section>
+            </aside>
         </section>
 
         <footer class="status-bar">
@@ -104,7 +154,7 @@
     <div id="nicknameModal" class="modal" hidden>
         <div class="modal-panel glass">
             <h2>设置协作昵称</h2>
-            <p>你的昵称将用于评论、星标和已读记录展示。</p>
+            <p>你的昵称将用于上传归属、评论、星标和已读记录展示。</p>
             <form id="nicknameForm" class="stack-form">
                 <input type="text" id="nicknameInput" minlength="2" maxlength="20" placeholder="例如：小王 / Alice" required>
                 <div class="modal-actions">
@@ -114,21 +164,6 @@
             </form>
         </div>
     </div>
-
-    <aside id="commentDrawer" class="comment-drawer" hidden>
-        <div class="drawer-panel glass">
-            <header class="drawer-header">
-                <h3>文件评论</h3>
-                <button id="closeCommentDrawerButton" class="btn-ghost" type="button">关闭</button>
-            </header>
-            <p id="commentFileMeta" class="comment-file-meta"></p>
-            <div id="commentList" class="comment-list"></div>
-            <form id="commentForm" class="comment-form">
-                <textarea id="commentInput" maxlength="300" placeholder="写下你对这份资料的观点或行动建议..." required></textarea>
-                <button id="submitCommentButton" type="submit" class="btn-primary">发布评论</button>
-            </form>
-        </div>
-    </aside>
 
     <script src="{{ url_for('static', filename='js/room.js') }}"></script>
 </body>

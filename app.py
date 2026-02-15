@@ -4,7 +4,7 @@ import re
 import threading
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Dict, Optional
 
 from flask import (
@@ -24,7 +24,7 @@ from flask import (
 from flask_sqlalchemy import SQLAlchemy
 from openai import OpenAI
 from pypdf import PdfReader
-from sqlalchemy import or_
+from sqlalchemy import inspect, or_, text
 from werkzeug.security import check_password_hash, generate_password_hash
 from werkzeug.utils import secure_filename
 
@@ -53,6 +53,18 @@ JOB_STATUS_RUNNING = "running"
 JOB_STATUS_DONE = "done"
 JOB_STATUS_FAILED = "failed"
 
+DISCUSSION_STATUS_IDLE = "idle"
+DISCUSSION_STATUS_RUNNING = "running"
+DISCUSSION_STATUS_DONE = "done"
+DISCUSSION_STATUS_FAILED = "failed"
+
+ONLINE_WINDOW_SECONDS = 90
+PRESENCE_HEARTBEAT_SECONDS = 30
+DISCUSSION_RECOMPUTE_MIN_SECONDS = 30
+
+discussion_timers_lock = threading.Lock()
+discussion_timers: Dict[int, threading.Timer] = {}
+
 
 class Room(db.Model):
     __tablename__ = "rooms"
@@ -63,12 +75,27 @@ class Room(db.Model):
     passcode_hash = db.Column(db.String(255), nullable=False)
     created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
     created_by_ip = db.Column(db.String(64), nullable=True)
+    owner_viewer_token = db.Column(db.String(64), nullable=True)
+    discussion_ended_at = db.Column(db.DateTime, nullable=True)
+    discussion_status = db.Column(db.String(32), nullable=False, default=DISCUSSION_STATUS_IDLE)
+    discussion_summary_version = db.Column(db.Integer, nullable=False, default=0)
 
     files = db.relationship(
         "FileRecord",
         back_populates="room",
         cascade="all, delete-orphan",
         order_by=lambda: FileRecord.created_at.desc(),
+    )
+    participants = db.relationship(
+        "RoomParticipant",
+        back_populates="room",
+        cascade="all, delete-orphan",
+    )
+    discussion_summaries = db.relationship(
+        "RoomDiscussionSummary",
+        back_populates="room",
+        cascade="all, delete-orphan",
+        order_by=lambda: RoomDiscussionSummary.version.desc(),
     )
 
 
@@ -83,6 +110,8 @@ class FileRecord(db.Model):
     size_bytes = db.Column(db.BigInteger, nullable=False)
     created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
     uploader_ip = db.Column(db.String(64), nullable=True)
+    uploader_viewer_token = db.Column(db.String(64), nullable=True, index=True)
+    uploader_nickname = db.Column(db.String(40), nullable=True)
     summary_status = db.Column(db.String(32), nullable=False, default=SUMMARY_STATUS_NOT_APPLICABLE)
     summary_text = db.Column(db.Text, nullable=True)
     summary_json = db.Column(db.JSON, nullable=True)
@@ -185,12 +214,51 @@ class FileReadState(db.Model):
     file = db.relationship("FileRecord", back_populates="read_states")
 
 
+class RoomParticipant(db.Model):
+    __tablename__ = "room_participants"
+    __table_args__ = (db.UniqueConstraint("room_id", "viewer_token", name="uq_room_participant"),)
+
+    id = db.Column(db.Integer, primary_key=True)
+    room_id = db.Column(db.Integer, db.ForeignKey("rooms.id", ondelete="CASCADE"), nullable=False, index=True)
+    viewer_token = db.Column(db.String(64), nullable=False, index=True)
+    nickname = db.Column(db.String(40), nullable=False)
+    joined_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+    last_seen_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+    last_action_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+    upload_count = db.Column(db.Integer, nullable=False, default=0)
+    comment_count = db.Column(db.Integer, nullable=False, default=0)
+
+    room = db.relationship("Room", back_populates="participants")
+
+
+class RoomDiscussionSummary(db.Model):
+    __tablename__ = "room_discussion_summaries"
+    __table_args__ = (db.UniqueConstraint("room_id", "version", name="uq_room_discussion_version"),)
+
+    id = db.Column(db.Integer, primary_key=True)
+    room_id = db.Column(db.Integer, db.ForeignKey("rooms.id", ondelete="CASCADE"), nullable=False, index=True)
+    version = db.Column(db.Integer, nullable=False)
+    status = db.Column(db.String(32), nullable=False, default=DISCUSSION_STATUS_RUNNING)
+    triggered_by_token = db.Column(db.String(64), nullable=True)
+    source_last_comment_id = db.Column(db.Integer, nullable=True)
+    summary_json = db.Column(db.JSON, nullable=True)
+    summary_text = db.Column(db.Text, nullable=True)
+    error = db.Column(db.Text, nullable=True)
+    created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    room = db.relationship("Room", back_populates="discussion_summaries")
+
+
 db.Index("idx_files_room_created_at", FileRecord.room_id, FileRecord.created_at)
 db.Index("idx_jobs_file_id", SummaryJob.file_id)
 db.Index("idx_file_comments_file_created_at", FileComment.file_id, FileComment.created_at)
 db.Index("idx_file_comments_room_created_at", FileComment.room_id, FileComment.created_at)
 db.Index("idx_file_stars_room_created_at", FileStar.room_id, FileStar.created_at)
 db.Index("idx_file_read_states_room_updated_at", FileReadState.room_id, FileReadState.updated_at)
+db.Index("idx_files_room_uploader_created_at", FileRecord.room_id, FileRecord.uploader_viewer_token, FileRecord.created_at)
+db.Index("idx_room_participants_room_last_seen_at", RoomParticipant.room_id, RoomParticipant.last_seen_at)
+db.Index("idx_room_discussion_summaries_room_updated_at", RoomDiscussionSummary.room_id, RoomDiscussionSummary.updated_at)
 
 
 def normalize_database_url(url: str) -> str:
@@ -228,6 +296,10 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
         SUMMARY_MIN_TEXT_CHARS=int(os.getenv("SUMMARY_MIN_TEXT_CHARS", "80")),
         SUMMARY_MAX_ATTEMPTS=int(os.getenv("SUMMARY_MAX_ATTEMPTS", "2")),
         SUMMARY_RETRY_DELAY_SECONDS=int(os.getenv("SUMMARY_RETRY_DELAY_SECONDS", "3")),
+        DISCUSSION_RECOMPUTE_MIN_SECONDS=int(os.getenv("DISCUSSION_RECOMPUTE_MIN_SECONDS", str(DISCUSSION_RECOMPUTE_MIN_SECONDS))),
+        ONLINE_WINDOW_SECONDS=int(os.getenv("ONLINE_WINDOW_SECONDS", str(ONLINE_WINDOW_SECONDS))),
+        PRESENCE_HEARTBEAT_SECONDS=int(os.getenv("PRESENCE_HEARTBEAT_SECONDS", str(PRESENCE_HEARTBEAT_SECONDS))),
+        DISCUSSION_ASYNC=os.getenv("DISCUSSION_ASYNC", "1") != "0",
         DEFAULT_ROOM_SLUG=os.getenv("DEFAULT_ROOM_SLUG", "demo"),
         DEFAULT_ROOM_NAME=os.getenv("DEFAULT_ROOM_NAME", "Demo Room"),
         DEFAULT_ROOM_PASSCODE=os.getenv("DEFAULT_ROOM_PASSCODE", "demo1234"),
@@ -246,6 +318,7 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
     with app.app_context():
         os.makedirs(current_app.config["UPLOAD_FOLDER"], exist_ok=True)
         db.create_all()
+        upgrade_schema_for_existing_databases()
         ensure_default_room()
 
     return app
@@ -311,16 +384,26 @@ def register_routes(app: Flask) -> None:
         else:
             room_slug = make_unique_slug(room_name)
 
+        owner_viewer_token = ensure_room_viewer_token(room_slug)
         room = Room(
             name=room_name,
             slug=room_slug,
             passcode_hash=generate_password_hash(passcode),
             created_by_ip=get_client_ip(),
+            owner_viewer_token=owner_viewer_token,
+            discussion_status=DISCUSSION_STATUS_IDLE,
+            discussion_summary_version=0,
         )
         db.session.add(room)
         db.session.commit()
 
         mark_room_authorized(room.slug)
+        upsert_room_participant(
+            room=room,
+            viewer_token=owner_viewer_token,
+            nickname=get_room_viewer_nickname(room_slug),
+            action="create_room",
+        )
         write_access_log(room_id=room.id, action="create_room")
 
         share_url = request.host_url.rstrip("/") + url_for("room_page", room_slug=room.slug)
@@ -330,6 +413,7 @@ def register_routes(app: Flask) -> None:
                 "success": True,
                 "room": serialize_room(room),
                 "share_url": share_url,
+                "discussion": serialize_discussion_state(room),
             }
         )
 
@@ -346,6 +430,13 @@ def register_routes(app: Flask) -> None:
             return jsonify({"success": False, "message": "Invalid passcode."}), 401
 
         mark_room_authorized(room.slug)
+        viewer_token = ensure_room_viewer_token(room.slug)
+        upsert_room_participant(
+            room=room,
+            viewer_token=viewer_token,
+            nickname=get_room_viewer_nickname(room.slug),
+            action="auth_room",
+        )
         write_access_log(room_id=room.id, action="auth_room")
 
         return jsonify({"success": True, "room": serialize_room(room)})
@@ -356,7 +447,14 @@ def register_routes(app: Flask) -> None:
         if error_response:
             return error_response
 
+        viewer_token = get_room_viewer_token(room_slug)
         viewer_nickname = get_room_viewer_nickname(room_slug)
+        upsert_room_participant(
+            room=room,
+            viewer_token=viewer_token,
+            nickname=viewer_nickname,
+            action="get_profile",
+        )
         return jsonify(
             {
                 "success": True,
@@ -364,7 +462,10 @@ def register_routes(app: Flask) -> None:
                 "viewer": {
                     "has_profile": bool(viewer_nickname),
                     "nickname": viewer_nickname,
+                    "viewer_token": viewer_token,
+                    "is_owner": bool(viewer_token and room.owner_viewer_token == viewer_token),
                 },
+                "discussion": serialize_discussion_state(room),
             }
         )
 
@@ -380,8 +481,9 @@ def register_routes(app: Flask) -> None:
         if len(nickname) < 2 or len(nickname) > 20:
             return jsonify({"success": False, "message": "Nickname must be between 2 and 20 characters."}), 400
 
-        ensure_room_viewer_token(room_slug)
+        viewer_token = ensure_room_viewer_token(room_slug)
         set_room_viewer_nickname(room_slug, nickname)
+        upsert_room_participant(room=room, viewer_token=viewer_token, nickname=nickname, action="set_profile")
         write_access_log(room_id=room.id, action="set_profile")
 
         return jsonify(
@@ -390,7 +492,9 @@ def register_routes(app: Flask) -> None:
                 "viewer": {
                     "nickname": nickname,
                     "viewer_token": "session-scoped",
+                    "is_owner": bool(room.owner_viewer_token and viewer_token == room.owner_viewer_token),
                 },
+                "discussion": serialize_discussion_state(room),
             }
         )
 
@@ -400,7 +504,7 @@ def register_routes(app: Flask) -> None:
         if error_response:
             return error_response
 
-        return handle_file_upload(room=room, deprecated=False, bypass_auth=False)
+        return handle_file_upload(room=room, deprecated=False, bypass_auth=False, require_profile=True)
 
     @app.get("/api/rooms/<room_slug>/files")
     def list_room_files_api(room_slug: str) -> Any:
@@ -410,12 +514,27 @@ def register_routes(app: Flask) -> None:
 
         viewer_token = get_room_viewer_token(room_slug)
         viewer_nickname = get_room_viewer_nickname(room_slug)
-        room_files = (
-            FileRecord.query.filter_by(room_id=room.id)
-            .order_by(FileRecord.created_at.desc(), FileRecord.id.desc())
-            .all()
-        )
-        serialized_files = [serialize_file(file_record, viewer_token=viewer_token) for file_record in room_files]
+        uploader_token = (request.args.get("uploader_token") or "").strip() or None
+        file_type = (request.args.get("file_type") or "all").strip().lower()
+        if file_type not in {"all", "image", "pdf"}:
+            file_type = "all"
+        selected_file_id_raw = (request.args.get("selected_file_id") or "").strip()
+        selected_file_id = int(selected_file_id_raw) if selected_file_id_raw.isdigit() else None
+
+        query = FileRecord.query.filter_by(room_id=room.id)
+        if uploader_token:
+            query = query.filter(FileRecord.uploader_viewer_token == uploader_token)
+
+        room_files = query.order_by(FileRecord.created_at.desc(), FileRecord.id.desc()).all()
+        filtered_files = []
+        for file_record in room_files:
+            extension = get_extension(file_record.stored_name)
+            current_type = "image" if extension in IMAGE_EXTENSIONS else "pdf"
+            if file_type != "all" and current_type != file_type:
+                continue
+            filtered_files.append(file_record)
+
+        serialized_files = [serialize_file(file_record, viewer_token=viewer_token) for file_record in filtered_files]
         starred_files = sum(1 for file_record in serialized_files if file_record["collab"]["starred_by_me"])
         unread_files = sum(1 for file_record in serialized_files if not file_record["collab"]["read_by_me"])
 
@@ -426,11 +545,18 @@ def register_routes(app: Flask) -> None:
                 "viewer": {
                     "has_profile": bool(viewer_nickname),
                     "nickname": viewer_nickname,
+                    "viewer_token": viewer_token,
                 },
                 "metrics": {
                     "total_files": len(serialized_files),
                     "starred_files": starred_files,
                     "unread_files": unread_files,
+                },
+                "discussion": serialize_discussion_state(room),
+                "filters": {
+                    "uploader_token": uploader_token,
+                    "file_type": file_type,
+                    "selected_file_id": selected_file_id,
                 },
                 "files": serialized_files,
             }
@@ -481,6 +607,68 @@ def register_routes(app: Flask) -> None:
 
         return jsonify({"success": True, "message": "File deleted."})
 
+    @app.post("/api/rooms/<room_slug>/presence")
+    def report_room_presence_api(room_slug: str) -> Any:
+        room, error_response = get_room_for_api(room_slug, require_auth=True)
+        if error_response:
+            return error_response
+
+        viewer_token = ensure_room_viewer_token(room_slug)
+        viewer_nickname = get_room_viewer_nickname(room_slug)
+        participant = upsert_room_participant(
+            room=room,
+            viewer_token=viewer_token,
+            nickname=viewer_nickname,
+            action="presence",
+        )
+
+        return jsonify(
+            {
+                "success": True,
+                "presence": {
+                    "viewer_token": viewer_token,
+                    "nickname": viewer_nickname,
+                    "last_seen_at": participant.last_seen_at.isoformat() + "Z",
+                    "heartbeat_seconds": current_app.config["PRESENCE_HEARTBEAT_SECONDS"],
+                },
+            }
+        )
+
+    @app.get("/api/rooms/<room_slug>/collaborators")
+    def list_room_collaborators_api(room_slug: str) -> Any:
+        room, error_response = get_room_for_api(room_slug, require_auth=True)
+        if error_response:
+            return error_response
+
+        viewer_token = get_room_viewer_token(room_slug)
+        participants = RoomParticipant.query.filter_by(room_id=room.id).all()
+        collaborators = [serialize_participant(room.id, participant, viewer_token) for participant in participants]
+
+        def iso_to_epoch(value: Optional[str]) -> float:
+            if not value:
+                return 0.0
+            normalized = value.replace("Z", "")
+            try:
+                return datetime.fromisoformat(normalized).timestamp()
+            except Exception:
+                return 0.0
+
+        def sort_key(item: Dict[str, Any]):
+            uploaded_first = 0 if item["upload_count"] > 0 else 1
+            online_first = 0 if item["is_online"] else 1
+            last_action = iso_to_epoch(item.get("last_action_at"))
+            return (uploaded_first, online_first, -last_action, item["nickname"].lower())
+
+        collaborators.sort(key=sort_key)
+        return jsonify(
+            {
+                "success": True,
+                "room": serialize_room(room),
+                "viewer_token": viewer_token,
+                "collaborators": collaborators,
+            }
+        )
+
     @app.get("/api/rooms/<room_slug>/files/<int:file_id>/comments")
     def list_file_comments_api(room_slug: str, file_id: int) -> Any:
         room, error_response = get_room_for_api(room_slug, require_auth=True)
@@ -491,14 +679,25 @@ def register_routes(app: Flask) -> None:
         if file_record is None:
             return jsonify({"success": False, "message": "File not found."}), 404
 
-        latest_comments = (
-            FileComment.query.filter_by(room_id=room.id, file_id=file_id)
-            .order_by(FileComment.created_at.desc(), FileComment.id.desc())
-            .limit(50)
-            .all()
+        after_id_raw = (request.args.get("after_id") or "").strip()
+        after_id = int(after_id_raw) if after_id_raw.isdigit() else None
+
+        query = FileComment.query.filter_by(room_id=room.id, file_id=file_id)
+        if after_id is not None:
+            comments = query.filter(FileComment.id > after_id).order_by(FileComment.id.asc()).all()
+            next_after_id = comments[-1].id if comments else after_id
+        else:
+            latest_comments = query.order_by(FileComment.created_at.desc(), FileComment.id.desc()).limit(50).all()
+            comments = list(reversed(latest_comments))
+            next_after_id = comments[-1].id if comments else 0
+
+        return jsonify(
+            {
+                "success": True,
+                "comments": [serialize_comment(comment) for comment in comments],
+                "cursor": {"after_id": next_after_id},
+            }
         )
-        comments = list(reversed(latest_comments))
-        return jsonify({"success": True, "comments": [serialize_comment(comment) for comment in comments]})
 
     @app.post("/api/rooms/<room_slug>/files/<int:file_id>/comments")
     def create_file_comment_api(room_slug: str, file_id: int) -> Any:
@@ -532,6 +731,14 @@ def register_routes(app: Flask) -> None:
         db.session.add(comment)
         db.session.commit()
 
+        upsert_room_participant(
+            room=room,
+            viewer_token=viewer_token,
+            nickname=viewer_nickname,
+            action="add_comment",
+            increment_comment=1,
+        )
+        maybe_queue_discussion_summary(room=room, triggered_by_token=viewer_token)
         write_access_log(room_id=room.id, action="add_comment", file_id=file_id)
         return jsonify({"success": True, "comment": serialize_comment(comment)})
 
@@ -571,6 +778,12 @@ def register_routes(app: Flask) -> None:
             existing_star.nickname = viewer_nickname
 
         db.session.commit()
+        upsert_room_participant(
+            room=room,
+            viewer_token=viewer_token,
+            nickname=viewer_nickname,
+            action="star_file" if starred else "unstar_file",
+        )
         write_access_log(room_id=room.id, action="star_file" if starred else "unstar_file", file_id=file_id)
 
         return jsonify(
@@ -616,12 +829,61 @@ def register_routes(app: Flask) -> None:
             existing_state.updated_at = datetime.utcnow()
 
         db.session.commit()
+        upsert_room_participant(
+            room=room,
+            viewer_token=viewer_token,
+            nickname=viewer_nickname,
+            action="mark_read" if read_value else "mark_unread",
+        )
         write_access_log(room_id=room.id, action="mark_read" if read_value else "mark_unread", file_id=file_id)
 
         return jsonify(
             {
                 "success": True,
                 "collab": build_file_collab(file_record.id, viewer_token),
+            }
+        )
+
+    @app.post("/api/rooms/<room_slug>/discussion/end")
+    def end_room_discussion_api(room_slug: str) -> Any:
+        room, error_response = get_room_for_api(room_slug, require_auth=True)
+        if error_response:
+            return error_response
+
+        viewer_token = get_room_viewer_token(room_slug)
+        if not viewer_token or room.owner_viewer_token != viewer_token:
+            return jsonify({"success": False, "message": "Only the room owner can end discussion."}), 403
+
+        room.discussion_ended_at = datetime.utcnow()
+        room.discussion_status = DISCUSSION_STATUS_RUNNING
+        db.session.commit()
+
+        upsert_room_participant(
+            room=room,
+            viewer_token=viewer_token,
+            nickname=get_room_viewer_nickname(room_slug),
+            action="end_discussion",
+        )
+        maybe_queue_discussion_summary(room=room, triggered_by_token=viewer_token, force=True)
+        write_access_log(room_id=room.id, action="discussion_end")
+        return jsonify({"success": True, "discussion": serialize_discussion_state(room)})
+
+    @app.get("/api/rooms/<room_slug>/discussion/summary")
+    def get_room_discussion_summary_api(room_slug: str) -> Any:
+        room, error_response = get_room_for_api(room_slug, require_auth=True)
+        if error_response:
+            return error_response
+
+        latest_summary = (
+            RoomDiscussionSummary.query.filter_by(room_id=room.id)
+            .order_by(RoomDiscussionSummary.version.desc())
+            .first()
+        )
+        return jsonify(
+            {
+                "success": True,
+                "discussion": serialize_discussion_state(room),
+                "summary": serialize_discussion_summary(latest_summary),
             }
         )
 
@@ -707,7 +969,7 @@ def register_routes(app: Flask) -> None:
     @app.post("/upload")
     def legacy_upload_file() -> Any:
         default_room = ensure_default_room()
-        return handle_file_upload(room=default_room, deprecated=True, bypass_auth=True)
+        return handle_file_upload(room=default_room, deprecated=True, bypass_auth=True, require_profile=False)
 
     @app.get("/uploads/<filename>")
     def legacy_uploaded_file(filename: str) -> Any:
@@ -850,6 +1112,9 @@ def serialize_room(room: Room) -> Dict[str, Any]:
         "slug": room.slug,
         "name": room.name,
         "created_at": room.created_at.isoformat() + "Z",
+        "discussion_status": room.discussion_status,
+        "discussion_ended_at": room.discussion_ended_at.isoformat() + "Z" if room.discussion_ended_at else None,
+        "discussion_summary_version": room.discussion_summary_version,
     }
 
 
@@ -866,6 +1131,35 @@ def serialize_job(summary_job: SummaryJob) -> Dict[str, Any]:
     }
 
 
+def serialize_discussion_state(room: Room) -> Dict[str, Any]:
+    viewer_token = get_room_viewer_token(room.slug)
+    return {
+        "status": room.discussion_status,
+        "ended_at": room.discussion_ended_at.isoformat() + "Z" if room.discussion_ended_at else None,
+        "summary_version": room.discussion_summary_version,
+        "is_owner": bool(viewer_token and room.owner_viewer_token and viewer_token == room.owner_viewer_token),
+        "owner_bound": bool(room.owner_viewer_token),
+    }
+
+
+def serialize_discussion_summary(summary: Optional[RoomDiscussionSummary]) -> Optional[Dict[str, Any]]:
+    if summary is None:
+        return None
+
+    return {
+        "id": summary.id,
+        "version": summary.version,
+        "status": summary.status,
+        "triggered_by_token": summary.triggered_by_token,
+        "source_last_comment_id": summary.source_last_comment_id,
+        "summary_json": summary.summary_json,
+        "summary_text": summary.summary_text,
+        "error": summary.error,
+        "created_at": summary.created_at.isoformat() + "Z" if summary.created_at else None,
+        "updated_at": summary.updated_at.isoformat() + "Z" if summary.updated_at else None,
+    }
+
+
 def serialize_comment(comment: FileComment) -> Dict[str, Any]:
     return {
         "id": comment.id,
@@ -874,6 +1168,43 @@ def serialize_comment(comment: FileComment) -> Dict[str, Any]:
         "nickname": comment.nickname,
         "content": comment.content,
         "created_at": comment.created_at.isoformat() + "Z",
+    }
+
+
+def serialize_participant(room_id: int, participant: RoomParticipant, viewer_token: Optional[str]) -> Dict[str, Any]:
+    online_window_seconds = current_app.config["ONLINE_WINDOW_SECONDS"]
+    is_online = participant.last_seen_at >= datetime.utcnow() - timedelta(seconds=online_window_seconds)
+    recent_uploads = (
+        FileRecord.query.filter_by(room_id=room_id, uploader_viewer_token=participant.viewer_token)
+        .order_by(FileRecord.created_at.desc(), FileRecord.id.desc())
+        .limit(5)
+        .all()
+    )
+    total_uploads = FileRecord.query.filter_by(room_id=room_id, uploader_viewer_token=participant.viewer_token).count()
+
+    uploads_payload = []
+    for file_record in recent_uploads[:5]:
+        uploads_payload.append(
+            {
+                "id": file_record.id,
+                "original_name": file_record.original_name,
+                "type": "image" if get_extension(file_record.stored_name) in IMAGE_EXTENSIONS else "pdf",
+            }
+        )
+
+    extra_upload_count = max(total_uploads - 5, 0)
+    return {
+        "viewer_token": participant.viewer_token,
+        "nickname": participant.nickname,
+        "joined_at": participant.joined_at.isoformat() + "Z" if participant.joined_at else None,
+        "last_seen_at": participant.last_seen_at.isoformat() + "Z" if participant.last_seen_at else None,
+        "last_action_at": participant.last_action_at.isoformat() + "Z" if participant.last_action_at else None,
+        "is_online": is_online,
+        "upload_count": participant.upload_count,
+        "comment_count": participant.comment_count,
+        "is_me": bool(viewer_token and participant.viewer_token == viewer_token),
+        "recent_uploads": uploads_payload,
+        "extra_upload_count": extra_upload_count,
     }
 
 
@@ -920,6 +1251,9 @@ def serialize_file(file_record: FileRecord, legacy: bool = False, viewer_token: 
         "summary_json": file_record.summary_json,
         "summary_error": file_record.summary_error,
         "summary_job_id": latest_job_id,
+        "uploader_viewer_token": file_record.uploader_viewer_token,
+        "uploader_nickname": file_record.uploader_nickname,
+        "is_uploaded_by_me": bool(viewer_token and file_record.uploader_viewer_token == viewer_token),
         "collab": build_file_collab(file_record.id, viewer_token),
     }
 
@@ -939,11 +1273,347 @@ def ensure_default_room() -> Room:
             name=current_app.config["DEFAULT_ROOM_NAME"],
             passcode_hash=generate_password_hash(current_app.config["DEFAULT_ROOM_PASSCODE"]),
             created_by_ip="system",
+            discussion_status=DISCUSSION_STATUS_IDLE,
+            discussion_summary_version=0,
         )
         db.session.add(default_room)
         db.session.commit()
+    else:
+        updated = False
+        if not default_room.discussion_status:
+            default_room.discussion_status = DISCUSSION_STATUS_IDLE
+            updated = True
+        if default_room.discussion_summary_version is None:
+            default_room.discussion_summary_version = 0
+            updated = True
+        if updated:
+            db.session.commit()
 
     return default_room
+
+
+def upsert_room_participant(
+    room: Room,
+    viewer_token: Optional[str],
+    nickname: str,
+    action: str,
+    increment_upload: int = 0,
+    increment_comment: int = 0,
+) -> Optional[RoomParticipant]:
+    if not viewer_token:
+        return None
+
+    clean_nickname = (nickname or "").strip() or "匿名协作者"
+    participant = RoomParticipant.query.filter_by(room_id=room.id, viewer_token=viewer_token).first()
+    now = datetime.utcnow()
+
+    if participant is None:
+        participant = RoomParticipant(
+            room_id=room.id,
+            viewer_token=viewer_token,
+            nickname=clean_nickname,
+            joined_at=now,
+            last_seen_at=now,
+            last_action_at=now,
+            upload_count=max(increment_upload, 0),
+            comment_count=max(increment_comment, 0),
+        )
+        db.session.add(participant)
+    else:
+        participant.nickname = clean_nickname
+        participant.last_seen_at = now
+        participant.last_action_at = now
+        if increment_upload:
+            participant.upload_count = max(participant.upload_count + increment_upload, 0)
+        if increment_comment:
+            participant.comment_count = max(participant.comment_count + increment_comment, 0)
+
+    db.session.commit()
+    if action:
+        current_app.logger.info(
+            "participant updated room=%s token=%s action=%s upload_count=%s comment_count=%s",
+            room.slug,
+            viewer_token[:8],
+            action,
+            participant.upload_count,
+            participant.comment_count,
+        )
+    return participant
+
+
+def maybe_queue_discussion_summary(room: Room, triggered_by_token: Optional[str], force: bool = False) -> None:
+    if not room.discussion_ended_at:
+        return
+
+    latest_summary = (
+        RoomDiscussionSummary.query.filter_by(room_id=room.id)
+        .order_by(RoomDiscussionSummary.version.desc())
+        .first()
+    )
+    min_interval = max(current_app.config["DISCUSSION_RECOMPUTE_MIN_SECONDS"], 1)
+    now = datetime.utcnow()
+
+    should_run_now = force
+    if not should_run_now:
+        if latest_summary is None:
+            should_run_now = True
+        elif latest_summary.updated_at is None:
+            should_run_now = True
+        else:
+            should_run_now = (now - latest_summary.updated_at).total_seconds() >= min_interval
+
+    if should_run_now:
+        enqueue_discussion_summary(room.id, triggered_by_token)
+        return
+
+    if latest_summary and latest_summary.updated_at:
+        delay_seconds = min_interval - (now - latest_summary.updated_at).total_seconds()
+    else:
+        delay_seconds = min_interval
+    delay_seconds = max(int(delay_seconds), 1)
+
+    with discussion_timers_lock:
+        existing_timer = discussion_timers.get(room.id)
+        if existing_timer is not None and existing_timer.is_alive():
+            return
+
+        timer = threading.Timer(delay_seconds, lambda: enqueue_discussion_summary(room.id, triggered_by_token))
+        timer.daemon = True
+        discussion_timers[room.id] = timer
+        timer.start()
+
+
+def enqueue_discussion_summary(room_id: int, triggered_by_token: Optional[str]) -> None:
+    with app.app_context():
+        room = db.session.get(Room, room_id)
+        if room is None:
+            return
+
+        room.discussion_status = DISCUSSION_STATUS_RUNNING
+        next_version = (room.discussion_summary_version or 0) + 1
+        room.discussion_summary_version = next_version
+
+        latest_comment = (
+            FileComment.query.filter_by(room_id=room.id)
+            .order_by(FileComment.id.desc())
+            .first()
+        )
+        summary_record = RoomDiscussionSummary(
+            room_id=room.id,
+            version=next_version,
+            status=DISCUSSION_STATUS_RUNNING,
+            triggered_by_token=triggered_by_token,
+            source_last_comment_id=latest_comment.id if latest_comment else None,
+        )
+        db.session.add(summary_record)
+        db.session.commit()
+
+        if not current_app.config["DISCUSSION_ASYNC"]:
+            process_discussion_summary(room_id, summary_record.id)
+            return
+
+        worker = threading.Thread(
+            target=_run_discussion_summary_in_background,
+            args=(room_id, summary_record.id),
+            daemon=True,
+            name=f"discussion-summary-{room_id}-{summary_record.id}",
+        )
+        worker.start()
+
+
+def _run_discussion_summary_in_background(room_id: int, summary_id: int) -> None:
+    try:
+        process_discussion_summary(room_id, summary_id)
+    except Exception as exc:
+        with app.app_context():
+            room = db.session.get(Room, room_id)
+            summary_record = db.session.get(RoomDiscussionSummary, summary_id)
+            if room and summary_record:
+                room.discussion_status = DISCUSSION_STATUS_FAILED
+                summary_record.status = DISCUSSION_STATUS_FAILED
+                summary_record.error = str(exc)
+                summary_record.updated_at = datetime.utcnow()
+                db.session.commit()
+
+
+def build_discussion_summary_json(room: Room) -> Dict[str, Any]:
+    room_files = (
+        FileRecord.query.filter_by(room_id=room.id)
+        .order_by(FileRecord.created_at.asc(), FileRecord.id.asc())
+        .all()
+    )
+    comments = (
+        FileComment.query.filter_by(room_id=room.id)
+        .order_by(FileComment.created_at.asc(), FileComment.id.asc())
+        .all()
+    )
+
+    file_map = {file_record.id: file_record for file_record in room_files}
+    grouped: Dict[str, Dict[str, Any]] = {}
+
+    for comment in comments:
+        file_record = file_map.get(comment.file_id)
+        if file_record is None:
+            continue
+
+        owner_nickname = (file_record.uploader_nickname or "未命名上传者").strip()
+        owner_group = grouped.setdefault(
+            owner_nickname,
+            {
+                "owner_nickname": owner_nickname,
+                "files": {},
+                "claimable_actions": [],
+            },
+        )
+        file_group = owner_group["files"].setdefault(
+            file_record.id,
+            {
+                "file_id": file_record.id,
+                "file_name": file_record.original_name,
+                "comment_details": [],
+            },
+        )
+        file_group["comment_details"].append(
+            {
+                "commenter_nickname": comment.nickname,
+                "comment_content": comment.content,
+                "created_at": comment.created_at.isoformat() + "Z",
+            }
+        )
+
+    summary_groups = []
+    for owner_name, owner_group in grouped.items():
+        file_items = list(owner_group["files"].values())
+        claim_actions = []
+        for item in file_items:
+            if item["comment_details"]:
+                first_comment = item["comment_details"][0]
+                claim_actions.append(f"跟进《{item['file_name']}》中的建议：{first_comment['comment_content'][:48]}")
+        if not claim_actions:
+            claim_actions = ["暂无明确认领事项，建议会后补充行动项。"]
+
+        summary_groups.append(
+            {
+                "owner_nickname": owner_name,
+                "files": file_items,
+                "claimable_actions": claim_actions[:5],
+            }
+        )
+
+    return {
+        "meeting_overview": {
+            "room_name": room.name,
+            "generated_at": datetime.utcnow().isoformat() + "Z",
+            "total_files": len(room_files),
+            "total_comments": len(comments),
+        },
+        "by_commented_owner": summary_groups,
+        "cross_actions": [
+            "优先处理评论频次最高的文件并分配责任人。",
+            "对争议评论标注后续复盘时间与负责人。",
+            "将已完成行动项回填到房间评论中形成闭环。",
+        ],
+    }
+
+
+def generate_ai_discussion_summary(base_payload: Dict[str, Any]) -> Dict[str, Any]:
+    api_key = current_app.config.get("OPENAI_API_KEY", "")
+    if not api_key:
+        return base_payload
+
+    model_name = current_app.config.get("OPENAI_MODEL", "gpt-4o-mini")
+    base_url = current_app.config.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
+    client = OpenAI(api_key=api_key, base_url=base_url)
+    is_official_openai = "api.openai.com" in base_url
+
+    system_prompt = (
+        "You are a meeting summarization assistant. Return strict JSON with keys: "
+        "meeting_overview, by_commented_owner, cross_actions. "
+        "Each item in by_commented_owner must include owner_nickname, files, claimable_actions."
+    )
+    user_prompt = (
+        "基于下面的会议讨论原始结构，输出更清晰的中文总结JSON，保持字段结构不变，"
+        "并确保可用于会后认领。\n\n"
+        f"{json.dumps(base_payload, ensure_ascii=False)}"
+    )
+    messages = (
+        [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]
+        if is_official_openai
+        else [{"role": "user", "content": f"{system_prompt}\n\n{user_prompt}"}]
+    )
+
+    payload: Dict[str, Any] = {
+        "model": model_name,
+        "temperature": 0.2,
+        "messages": messages,
+    }
+    if is_official_openai:
+        payload["response_format"] = {"type": "json_object"}
+
+    completion = client.chat.completions.create(**payload)
+    content = completion.choices[0].message.content
+    if isinstance(content, list):
+        content = "\n".join(str(item.get("text", "")) if isinstance(item, dict) else str(item) for item in content)
+    raw_content = str(content or "").strip()
+    parsed = try_parse_summary_json(raw_content)
+    if isinstance(parsed, dict) and parsed:
+        return parsed
+    return base_payload
+
+
+def process_discussion_summary(room_id: int, summary_id: int) -> None:
+    with app.app_context():
+        room = db.session.get(Room, room_id)
+        summary_record = db.session.get(RoomDiscussionSummary, summary_id)
+        if room is None or summary_record is None:
+            return
+
+        try:
+            summary_json = build_discussion_summary_json(room)
+            summary_json = generate_ai_discussion_summary(summary_json)
+            summary_record.summary_json = summary_json
+            summary_record.summary_text = json.dumps(summary_json, ensure_ascii=False)
+            summary_record.status = DISCUSSION_STATUS_DONE
+            summary_record.error = None
+            summary_record.updated_at = datetime.utcnow()
+            room.discussion_status = DISCUSSION_STATUS_DONE
+            db.session.commit()
+        except Exception as exc:
+            summary_record.status = DISCUSSION_STATUS_FAILED
+            summary_record.error = str(exc)
+            summary_record.updated_at = datetime.utcnow()
+            room.discussion_status = DISCUSSION_STATUS_FAILED
+            db.session.commit()
+
+        with discussion_timers_lock:
+            timer = discussion_timers.get(room.id)
+            if timer and not timer.is_alive():
+                discussion_timers.pop(room.id, None)
+
+
+def upgrade_schema_for_existing_databases() -> None:
+    inspector = inspect(db.engine)
+    existing_tables = set(inspector.get_table_names())
+
+    if "rooms" in existing_tables:
+        room_columns = {column["name"] for column in inspector.get_columns("rooms")}
+        with db.engine.begin() as conn:
+            if "owner_viewer_token" not in room_columns:
+                conn.execute(text("ALTER TABLE rooms ADD COLUMN owner_viewer_token VARCHAR(64)"))
+            if "discussion_ended_at" not in room_columns:
+                conn.execute(text("ALTER TABLE rooms ADD COLUMN discussion_ended_at TIMESTAMP"))
+            if "discussion_status" not in room_columns:
+                conn.execute(text(f"ALTER TABLE rooms ADD COLUMN discussion_status VARCHAR(32) DEFAULT '{DISCUSSION_STATUS_IDLE}'"))
+            if "discussion_summary_version" not in room_columns:
+                conn.execute(text("ALTER TABLE rooms ADD COLUMN discussion_summary_version INTEGER DEFAULT 0"))
+
+    if "files" in existing_tables:
+        file_columns = {column["name"] for column in inspector.get_columns("files")}
+        with db.engine.begin() as conn:
+            if "uploader_viewer_token" not in file_columns:
+                conn.execute(text("ALTER TABLE files ADD COLUMN uploader_viewer_token VARCHAR(64)"))
+            if "uploader_nickname" not in file_columns:
+                conn.execute(text("ALTER TABLE files ADD COLUMN uploader_nickname VARCHAR(40)"))
 
 
 def write_access_log(room_id: int, action: str, file_id: Optional[int] = None) -> None:
@@ -968,7 +1638,7 @@ def write_access_log(room_id: int, action: str, file_id: Optional[int] = None) -
         db.session.rollback()
 
 
-def handle_file_upload(room: Room, deprecated: bool, bypass_auth: bool) -> Any:
+def handle_file_upload(room: Room, deprecated: bool, bypass_auth: bool, require_profile: bool = False) -> Any:
     if not bypass_auth and not is_room_authorized(room.slug):
         return jsonify({"success": False, "message": "Room auth required."}), 401
 
@@ -986,6 +1656,11 @@ def handle_file_upload(room: Room, deprecated: bool, bypass_auth: bool) -> Any:
     extension = get_extension(uploaded_file.filename)
     safe_original_name = secure_filename(uploaded_file.filename) or f"file-{uuid.uuid4().hex}.{extension}"
     stored_name = f"{uuid.uuid4().hex}.{extension}"
+    viewer_token = get_room_viewer_token(room.slug)
+    viewer_nickname = get_room_viewer_nickname(room.slug)
+
+    if require_profile and (not viewer_token or not viewer_nickname):
+        return jsonify({"success": False, "message": "Please set your nickname before uploading files."}), 400
 
     room_folder = get_room_upload_folder(room.slug, ensure=True)
     file_path = os.path.join(room_folder, stored_name)
@@ -1002,6 +1677,8 @@ def handle_file_upload(room: Room, deprecated: bool, bypass_auth: bool) -> Any:
         mime_type=mime_type,
         size_bytes=file_size,
         uploader_ip=get_client_ip(),
+        uploader_viewer_token=viewer_token,
+        uploader_nickname=viewer_nickname or None,
         summary_status=summary_status,
     )
     db.session.add(file_record)
@@ -1029,7 +1706,14 @@ def handle_file_upload(room: Room, deprecated: bool, bypass_auth: bool) -> Any:
             db.session.commit()
 
     write_access_log(room_id=room.id, action="upload_file", file_id=file_record.id)
-    viewer_token = get_room_viewer_token(room.slug)
+    if viewer_token:
+        upsert_room_participant(
+            room=room,
+            viewer_token=viewer_token,
+            nickname=viewer_nickname,
+            action="upload_file",
+            increment_upload=1,
+        )
 
     payload = {
         "success": True,
