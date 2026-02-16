@@ -6,7 +6,7 @@ import time
 import uuid
 import hashlib
 from datetime import datetime, timedelta
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Set
 
 from flask import (
     Flask,
@@ -1299,6 +1299,13 @@ def register_routes(app: Flask) -> None:
             .order_by(RoomDiscussionSummary.version.desc())
             .first()
         )
+        if latest_summary is not None and isinstance(latest_summary.summary_json, dict):
+            normalized_summary_json = normalize_discussion_summary_payload(latest_summary.summary_json)
+            if normalized_summary_json != latest_summary.summary_json:
+                latest_summary.summary_json = normalized_summary_json
+                latest_summary.summary_text = json.dumps(normalized_summary_json, ensure_ascii=False)
+                latest_summary.updated_at = datetime.utcnow()
+                db.session.commit()
         return jsonify(
             {
                 "success": True,
@@ -2198,6 +2205,174 @@ def build_discussion_summary_json(room: Room) -> Dict[str, Any]:
     }
 
 
+def normalize_discussion_text_key(value: Any) -> str:
+    text = str(value or "")
+    text = re.sub(r"\s+", " ", text).strip()
+    text = re.sub(r"\s*([,，.。:：;；!！?？、])\s*", r"\1", text)
+    return text
+
+
+def normalize_discussion_text_list(value: Any, max_items: int = 12) -> List[str]:
+    source = value if isinstance(value, list) else []
+    seen: Set[str] = set()
+    normalized: List[str] = []
+    for item in source:
+        raw = str(item or "").strip()
+        key = normalize_discussion_text_key(raw)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        normalized.append(raw)
+        if len(normalized) >= max_items:
+            break
+    return normalized
+
+
+def infer_file_action_board_from_claims(file_item: Dict[str, Any], owner_claimable_actions: List[str]) -> Dict[str, Any]:
+    file_name = str(file_item.get("file_name") or "").strip()
+    action_board = file_item.get("action_board") if isinstance(file_item.get("action_board"), dict) else {}
+    processing = normalize_discussion_text_list(action_board.get("processing"), max_items=6)
+    follow_up = normalize_discussion_text_list(action_board.get("follow_up"), max_items=6)
+    consumed_keys: Set[str] = set()
+
+    def action_matches_file(action_text: str) -> bool:
+        if not file_name:
+            return False
+        return f"《{file_name}》" in action_text or file_name in action_text
+
+    if owner_claimable_actions and (not processing or not follow_up):
+        for action in owner_claimable_actions:
+            if not action_matches_file(action):
+                continue
+            if action.startswith("处理"):
+                if normalize_discussion_text_key(action) not in {normalize_discussion_text_key(item) for item in processing}:
+                    processing.append(action)
+                consumed_keys.add(normalize_discussion_text_key(action))
+            elif action.startswith("跟进"):
+                if normalize_discussion_text_key(action) not in {normalize_discussion_text_key(item) for item in follow_up}:
+                    follow_up.append(action)
+                consumed_keys.add(normalize_discussion_text_key(action))
+
+    line_comments = file_item.get("line_comments") if isinstance(file_item.get("line_comments"), list) else []
+    full_comments = file_item.get("full_comments") if isinstance(file_item.get("full_comments"), list) else []
+
+    if not processing:
+        for line_item in line_comments[:3]:
+            quote = str(line_item.get("quote_text") or "").strip()
+            if not quote:
+                continue
+            if (line_item.get("source_type") or "pdf").lower() == "pdf":
+                scope = f"第{line_item.get('page_number') or 1}页"
+            else:
+                scope = f"段落 {line_item.get('segment_key') or '-'}"
+            processing.append(f"处理《{file_name or '该文件'}》{scope}引用：{quote[:42]}")
+
+    if not follow_up:
+        for full_comment in full_comments[:3]:
+            follow_up.append(f"跟进《{file_name or '该文件'}》全文评论：{str(full_comment.get('comment_content') or '')[:42]}")
+
+    if not processing:
+        processing = [f"处理《{file_name or '该文件'}》：补充结构化结论与负责人。"]
+    if not follow_up:
+        follow_up = [f"跟进《{file_name or '该文件'}》：暂无全文评论，建议会后补充。"]
+
+    processing = normalize_discussion_text_list(processing, max_items=6)
+    follow_up = normalize_discussion_text_list(follow_up, max_items=6)
+    consumed_keys.update(normalize_discussion_text_key(item) for item in processing + follow_up)
+    consumed_keys.discard("")
+
+    return {
+        "processing": processing[:4],
+        "follow_up": follow_up[:4],
+        "consumed_keys": consumed_keys,
+    }
+
+
+def normalize_discussion_summary_payload(payload: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if not isinstance(payload, dict):
+        return payload
+
+    normalized_payload: Dict[str, Any] = dict(payload)
+    source_groups = payload.get("by_commented_owner")
+    if not isinstance(source_groups, list):
+        normalized_payload["by_commented_owner"] = []
+        return normalized_payload
+
+    normalized_groups: list[Dict[str, Any]] = []
+    for owner_group_raw in source_groups:
+        if not isinstance(owner_group_raw, dict):
+            continue
+
+        owner_group = dict(owner_group_raw)
+        owner_claimable_actions = normalize_discussion_text_list(owner_group.get("claimable_actions"), max_items=20)
+        owner_consumed_keys: Set[str] = set()
+
+        source_files = owner_group.get("files") if isinstance(owner_group.get("files"), list) else []
+        normalized_files: List[Dict[str, Any]] = []
+        owner_processing: List[str] = []
+        owner_follow_up: List[str] = []
+
+        for file_item_raw in source_files:
+            if not isinstance(file_item_raw, dict):
+                continue
+            file_item = dict(file_item_raw)
+
+            full_comments = file_item.get("full_comments")
+            if not isinstance(full_comments, list):
+                full_comments = file_item.get("comment_details") if isinstance(file_item.get("comment_details"), list) else []
+
+            line_comments = file_item.get("line_comments")
+            if not isinstance(line_comments, list):
+                line_comments = file_item.get("line_feedback") if isinstance(file_item.get("line_feedback"), list) else []
+
+            file_item["full_comments"] = full_comments
+            file_item["line_comments"] = line_comments
+            file_item["comment_details"] = full_comments
+            file_item["line_feedback"] = line_comments
+
+            action_board = infer_file_action_board_from_claims(file_item, owner_claimable_actions)
+            file_item["action_board"] = {
+                "processing": action_board["processing"],
+                "follow_up": action_board["follow_up"],
+            }
+            owner_consumed_keys.update(action_board["consumed_keys"])
+            owner_processing.extend(action_board["processing"])
+            owner_follow_up.extend(action_board["follow_up"])
+
+            if not isinstance(file_item.get("file_takeaways"), list) or not file_item.get("file_takeaways"):
+                file_item["file_takeaways"] = [
+                    f"全文评论 {len(full_comments)} 条，划线评论 {len(line_comments)} 条。",
+                    "优先处理高频被提及片段，并明确会后责任人。",
+                ]
+
+            normalized_files.append(file_item)
+
+        owner_action_board = owner_group.get("action_board") if isinstance(owner_group.get("action_board"), dict) else {}
+        owner_processing = normalize_discussion_text_list(owner_action_board.get("processing") or owner_processing, max_items=12)
+        owner_follow_up = normalize_discussion_text_list(owner_action_board.get("follow_up") or owner_follow_up, max_items=12)
+        owner_group["action_board"] = {"processing": owner_processing, "follow_up": owner_follow_up}
+
+        filtered_claimable: List[str] = []
+        seen_claimable: Set[str] = set()
+        for action in owner_claimable_actions:
+            key = normalize_discussion_text_key(action)
+            if not key or key in seen_claimable or key in owner_consumed_keys:
+                continue
+            seen_claimable.add(key)
+            filtered_claimable.append(action)
+        owner_group["claimable_actions"] = filtered_claimable
+
+        owner_group["files"] = normalized_files
+        normalized_groups.append(owner_group)
+
+    normalized_payload["by_commented_owner"] = normalized_groups
+    if not isinstance(normalized_payload.get("cross_actions"), list):
+        normalized_payload["cross_actions"] = []
+    if not isinstance(normalized_payload.get("meeting_overview"), dict):
+        normalized_payload["meeting_overview"] = {}
+    return normalized_payload
+
+
 def enforce_verbatim_discussion_payload(base_payload: Dict[str, Any], ai_payload: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(ai_payload, dict):
         return base_payload
@@ -2341,6 +2516,7 @@ def process_discussion_summary(room_id: int, summary_id: int) -> None:
         try:
             summary_json = build_discussion_summary_json(room)
             summary_json = generate_ai_discussion_summary(summary_json)
+            summary_json = normalize_discussion_summary_payload(summary_json)
             summary_record.summary_json = summary_json
             summary_record.summary_text = json.dumps(summary_json, ensure_ascii=False)
             summary_record.status = DISCUSSION_STATUS_DONE

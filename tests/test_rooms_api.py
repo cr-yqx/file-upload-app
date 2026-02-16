@@ -1,5 +1,7 @@
 ﻿import io
+import json
 import zipfile
+from datetime import datetime
 from urllib.parse import urlparse
 
 import pytest
@@ -603,6 +605,149 @@ def test_discussion_summary_contains_line_feedback(client):
     assert found_line_feedback is True
 
 
+def test_discussion_summary_endpoint_normalizes_legacy_action_board_and_dedupes_claims(client, test_app):
+    create_room(client, name="Legacy Summary Room", slug="legacy-summary-room", passcode="abcd1234")
+    set_profile(client, "legacy-summary-room", "Owner")
+    upload_payload = upload_pdf(client, slug="legacy-summary-room", filename="legacy-summary.pdf").get_json()
+
+    with test_app.app_context():
+        room = app_module.Room.query.filter_by(slug="legacy-summary-room").first()
+        assert room is not None
+        file_record = app_module.FileRecord.query.filter_by(id=upload_payload["file_id"]).first()
+        assert file_record is not None
+        file_name = app_module.get_file_original_name(file_record)
+
+        legacy_payload = {
+            "meeting_overview": {"room_name": room.name},
+            "by_commented_owner": [
+                {
+                    "owner_nickname": "Owner",
+                    "owner_summary": "legacy format payload",
+                    "files": [
+                        {
+                            "file_id": file_record.id,
+                            "file_name": file_name,
+                            "comment_details": [
+                                {
+                                    "commenter_nickname": "A",
+                                    "comment_content": "full legacy content",
+                                    "created_at": datetime.utcnow().isoformat() + "Z",
+                                }
+                            ],
+                            "line_feedback": [
+                                {
+                                    "thread_id": 1,
+                                    "source_type": "pdf",
+                                    "page_number": 1,
+                                    "quote_text": "legacy quote",
+                                    "comments": [
+                                        {
+                                            "commenter_nickname": "B",
+                                            "comment_content": "line legacy content",
+                                            "created_at": datetime.utcnow().isoformat() + "Z",
+                                        }
+                                    ],
+                                }
+                            ],
+                            "action_board": {"processing": [], "follow_up": []},
+                        }
+                    ],
+                    "claimable_actions": [
+                        f"处理《{file_name}》第1页引用：legacy quote",
+                        f"跟进《{file_name}》全文评论：full legacy content",
+                        f"跟进《{file_name}》全文评论：full legacy content",
+                        "额外待确认：会后统一术语口径",
+                    ],
+                    "action_board": {"processing": [], "follow_up": []},
+                }
+            ],
+            "cross_actions": [],
+        }
+
+        room.discussion_ended_at = datetime.utcnow()
+        room.discussion_status = app_module.DISCUSSION_STATUS_DONE
+        room.discussion_summary_version = 1
+        summary = app_module.RoomDiscussionSummary(
+            room_id=room.id,
+            version=1,
+            status=app_module.DISCUSSION_STATUS_DONE,
+            summary_json=legacy_payload,
+            summary_text=json.dumps(legacy_payload, ensure_ascii=False),
+        )
+        app_module.db.session.add(summary)
+        app_module.db.session.commit()
+
+    summary_response = client.get("/api/rooms/legacy-summary-room/discussion/summary")
+    assert summary_response.status_code == 200
+    payload = summary_response.get_json()
+    normalized = payload["summary"]["summary_json"]
+    owner_group = normalized["by_commented_owner"][0]
+    file_item = owner_group["files"][0]
+
+    assert file_item["action_board"]["processing"]
+    assert file_item["action_board"]["follow_up"]
+    assert file_item["comment_details"] == file_item["full_comments"]
+    assert file_item["line_feedback"] == file_item["line_comments"]
+    assert owner_group["claimable_actions"] == ["额外待确认：会后统一术语口径"]
+
+
+def test_discussion_summary_endpoint_removes_fully_mapped_claimable_actions(client, test_app):
+    create_room(client, name="Legacy Summary Room 2", slug="legacy-summary-room-2", passcode="abcd1234")
+    set_profile(client, "legacy-summary-room-2", "Owner")
+    upload_payload = upload_pdf(client, slug="legacy-summary-room-2", filename="legacy-summary-2.pdf").get_json()
+
+    with test_app.app_context():
+        room = app_module.Room.query.filter_by(slug="legacy-summary-room-2").first()
+        assert room is not None
+        file_record = app_module.FileRecord.query.filter_by(id=upload_payload["file_id"]).first()
+        assert file_record is not None
+        file_name = app_module.get_file_original_name(file_record)
+
+        legacy_payload = {
+            "meeting_overview": {"room_name": room.name},
+            "by_commented_owner": [
+                {
+                    "owner_nickname": "Owner",
+                    "files": [
+                        {
+                            "file_id": file_record.id,
+                            "file_name": file_name,
+                            "comment_details": [],
+                            "line_feedback": [],
+                            "action_board": {"processing": [], "follow_up": []},
+                        }
+                    ],
+                    "claimable_actions": [
+                        f"处理《{file_name}》：补充结构化结论与负责人。",
+                        f"跟进《{file_name}》：暂无全文评论，建议会后补充。",
+                    ],
+                    "action_board": {"processing": [], "follow_up": []},
+                }
+            ],
+            "cross_actions": [],
+        }
+
+        room.discussion_ended_at = datetime.utcnow()
+        room.discussion_status = app_module.DISCUSSION_STATUS_DONE
+        room.discussion_summary_version = 1
+        summary = app_module.RoomDiscussionSummary(
+            room_id=room.id,
+            version=1,
+            status=app_module.DISCUSSION_STATUS_DONE,
+            summary_json=legacy_payload,
+            summary_text=json.dumps(legacy_payload, ensure_ascii=False),
+        )
+        app_module.db.session.add(summary)
+        app_module.db.session.commit()
+
+    summary_response = client.get("/api/rooms/legacy-summary-room-2/discussion/summary")
+    assert summary_response.status_code == 200
+    payload = summary_response.get_json()
+    normalized = payload["summary"]["summary_json"]
+    owner_group = normalized["by_commented_owner"][0]
+    assert owner_group["claimable_actions"] == []
+
+
 def test_legacy_endpoints_still_work(client):
     upload_response = client.post(
         "/upload",
@@ -620,3 +765,4 @@ def test_legacy_endpoints_still_work(client):
     list_payload = list_response.get_json()
     assert list_payload["deprecated"] is True
     assert len(list_payload["files"]) >= 1
+
