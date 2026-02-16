@@ -1447,12 +1447,29 @@ def ensure_room_viewer_token(room_slug: str) -> str:
 def ensure_room_owner_binding(room: Room, viewer_token: Optional[str]) -> bool:
     if not viewer_token:
         return False
-    if room.owner_viewer_token:
-        return room.owner_viewer_token == viewer_token
+    if room.owner_viewer_token == viewer_token:
+        return True
 
-    room.owner_viewer_token = viewer_token
-    db.session.commit()
-    return True
+    if not room.owner_viewer_token:
+        room.owner_viewer_token = viewer_token
+        db.session.commit()
+        return True
+
+    creator_ip = (room.created_by_ip or "").strip()
+    requester_ip = get_client_ip().strip()
+    if creator_ip and creator_ip not in {"unknown", "system"} and requester_ip and requester_ip == creator_ip:
+        owner_participant = RoomParticipant.query.filter_by(
+            room_id=room.id, viewer_token=room.owner_viewer_token
+        ).first()
+        owner_nickname = (owner_participant.nickname or "").strip() if owner_participant else ""
+        viewer_nickname = get_room_viewer_nickname(room.slug)
+        if owner_nickname and owner_nickname != viewer_nickname:
+            return False
+        room.owner_viewer_token = viewer_token
+        db.session.commit()
+        return True
+
+    return False
 
 
 def get_room_viewer_nickname(room_slug: str) -> str:

@@ -293,6 +293,37 @@ def test_owner_binding_recovers_for_legacy_unbound_room(client, test_app):
     assert owner_end.get_json()["discussion"]["status"] in {"running", "done"}
 
 
+def test_owner_binding_recovers_when_creator_session_token_rotates(client, test_app):
+    create_room(client, name="Owner Recover Room", slug="owner-recover-room", passcode="abcd1234")
+    set_profile(client, "owner-recover-room", "Owner")
+
+    with test_app.app_context():
+        room = app_module.Room.query.filter_by(slug="owner-recover-room").first()
+        assert room is not None
+        room.created_by_ip = "127.0.0.1"
+        room.owner_viewer_token = "legacy-owner-token"
+        app_module.db.session.commit()
+
+    with client.session_transaction() as session_data:
+        session_data[app_module.room_session_key("owner-recover-room")] = True
+        session_data[app_module.room_viewer_token_session_key("owner-recover-room")] = "new-owner-token"
+
+    profile = client.get("/api/rooms/owner-recover-room/profile")
+    assert profile.status_code == 200
+    payload = profile.get_json()
+    assert payload["discussion"]["owner_bound"] is True
+    assert payload["discussion"]["is_owner"] is True
+
+    with test_app.app_context():
+        room = app_module.Room.query.filter_by(slug="owner-recover-room").first()
+        assert room is not None
+        assert room.owner_viewer_token == "new-owner-token"
+
+    owner_end = client.post("/api/rooms/owner-recover-room/discussion/end")
+    assert owner_end.status_code == 200
+    assert owner_end.get_json()["discussion"]["status"] in {"running", "done"}
+
+
 def test_delete_file_removes_metadata_and_asset(client):
     create_room(client, name="Delete Room", slug="delete-room", passcode="abcd1234")
     set_profile(client, "delete-room", "Frank")
