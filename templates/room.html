@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
@@ -155,6 +155,70 @@
         </footer>
     </main>
 
+    <div id="pdfReaderModal" class="pdf-reader-modal" hidden>
+        <div id="pdfReaderBackdrop" class="pdf-reader-backdrop"></div>
+        <section class="pdf-reader-shell glass" role="dialog" aria-modal="true" aria-label="PDF 阅读与划线评论">
+            <header class="pdf-reader-header">
+                <div class="pdf-reader-title-wrap">
+                    <h3 id="pdfReaderTitle">PDF 阅读</h3>
+                    <p id="pdfReaderSubtitle" class="tips">可划选文本并创建线程评论</p>
+                </div>
+                <div class="pdf-reader-toolbar">
+                    <button id="pdfPrevPageButton" type="button" class="btn-secondary">上一页</button>
+                    <span id="pdfPageInfo" class="chip">1 / 1</span>
+                    <button id="pdfNextPageButton" type="button" class="btn-secondary">下一页</button>
+                    <select id="pdfZoomSelect" aria-label="缩放">
+                        <option value="1">100%</option>
+                        <option value="1.25">125%</option>
+                    </select>
+                    <button id="closePdfReaderButton" type="button" class="btn-ghost">关闭</button>
+                </div>
+            </header>
+
+            <div class="pdf-reader-body">
+                <section class="pdf-reader-canvas-wrap">
+                    <div id="pdfCanvasContainer" class="pdf-canvas-container">
+                        <div id="pdfPageStage" class="pdf-page-stage">
+                            <canvas id="pdfCanvas"></canvas>
+                            <div id="pdfTextLayer" class="pdf-text-layer"></div>
+                            <div id="pdfHighlightLayer" class="pdf-highlight-layer"></div>
+                        </div>
+                    </div>
+                    <p id="pdfSelectionHint" class="tips">拖动选择文本可发起划线评论。</p>
+                    <button id="pageLevelCommentButton" type="button" class="btn-ghost" hidden>本页无文本层，发起页级评论</button>
+                </section>
+
+                <aside class="pdf-reader-side">
+                    <div class="pdf-side-tabs">
+                        <button id="lineThreadsTabButton" type="button" class="tab-btn active">划线线程</button>
+                        <button id="generalCommentsTabButton" type="button" class="tab-btn">通用评论</button>
+                    </div>
+
+                    <section id="lineThreadsPanel" class="pdf-side-panel">
+                        <div id="lineSelectionComposer" class="line-selection-composer" hidden>
+                            <p class="selection-quote" id="lineSelectionQuote"></p>
+                            <textarea id="lineSelectionInput" maxlength="300" placeholder="基于选中内容写评论..." rows="3"></textarea>
+                            <div class="line-selection-actions">
+                                <button id="lineSelectionSubmitButton" type="button" class="btn-primary">发布线程</button>
+                                <button id="lineSelectionCancelButton" type="button" class="btn-secondary">取消</button>
+                            </div>
+                        </div>
+                        <div id="lineThreadsEmpty" class="tips">本页暂无划线线程。</div>
+                        <div id="lineThreadsList" class="line-threads-list"></div>
+                    </section>
+
+                    <section id="generalCommentsPanel" class="pdf-side-panel" hidden>
+                        <div id="readerGeneralCommentList" class="comment-list"></div>
+                        <form id="readerGeneralCommentForm" class="comment-form">
+                            <textarea id="readerGeneralCommentInput" maxlength="300" placeholder="写下通用评论..." required></textarea>
+                            <button id="readerGeneralCommentSubmit" type="submit" class="btn-primary">发布评论</button>
+                        </form>
+                    </section>
+                </aside>
+            </div>
+        </section>
+    </div>
+
     <div id="nicknameModal" class="modal" hidden>
         <div class="modal-panel glass">
             <h2>设置协作昵称</h2>
@@ -169,6 +233,8 @@
         </div>
     </div>
 
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
     <script src="{{ url_for('static', filename='js/room.js') }}"></script>
 </body>
 </html>
+

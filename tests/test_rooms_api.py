@@ -60,6 +60,15 @@ def upload_png(client, slug="ml-room", filename="sample.png"):
     )
 
 
+def upload_pdf(client, slug="ml-room", filename="sample.pdf"):
+    pdf_bytes = b"%PDF-1.4\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%EOF"
+    return client.post(
+        f"/api/rooms/{slug}/upload",
+        data={"file": (io.BytesIO(pdf_bytes), filename)},
+        content_type="multipart/form-data",
+    )
+
+
 def test_create_room_and_auth_flow(client, test_app):
     create_response = create_room(client)
     assert create_response.status_code == 200
@@ -111,12 +120,7 @@ def test_upload_pdf_creates_async_job(client):
     create_room(client, name="PDF Room", slug="pdf-room", passcode="abcd1234")
     set_profile(client, "pdf-room", "Bob")
 
-    pdf_bytes = b"%PDF-1.4\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%EOF"
-    upload_response = client.post(
-        "/api/rooms/pdf-room/upload",
-        data={"file": (io.BytesIO(pdf_bytes), "lecture.pdf")},
-        content_type="multipart/form-data",
-    )
+    upload_response = upload_pdf(client, slug="pdf-room", filename="lecture.pdf")
 
     assert upload_response.status_code == 200
     upload_payload = upload_response.get_json()
@@ -284,6 +288,112 @@ def test_delete_file_removes_metadata_and_asset(client):
     file_path = urlparse(file_url).path
     check_deleted_response = client.get(file_path)
     assert check_deleted_response.status_code == 404
+
+
+def test_pdf_line_thread_crud_and_author_permissions(client, test_app):
+    create_room(client, name="Line Room", slug="line-room", passcode="abcd1234")
+    set_profile(client, "line-room", "Owner")
+    upload_payload = upload_pdf(client, slug="line-room", filename="paper.pdf").get_json()
+    file_id = upload_payload["file_id"]
+
+    create_thread = client.post(
+        f"/api/rooms/line-room/files/{file_id}/line-threads",
+        json={
+            "page_number": 1,
+            "quote_text": "Important paragraph",
+            "quote_prefix": "prefix",
+            "quote_suffix": "suffix",
+            "quote_start": 10,
+            "quote_end": 28,
+            "content": "请先看这一段。",
+        },
+    )
+    assert create_thread.status_code == 200
+    thread_payload = create_thread.get_json()
+    thread_id = thread_payload["thread"]["id"]
+    first_comment_id = thread_payload["comment"]["id"]
+    assert thread_payload["thread"]["message_count"] == 1
+
+    listed = client.get(f"/api/rooms/line-room/files/{file_id}/line-threads?page=1")
+    assert listed.status_code == 200
+    listed_payload = listed.get_json()
+    assert len(listed_payload["threads"]) == 1
+    assert listed_payload["threads"][0]["id"] == thread_id
+
+    reply = client.post(
+        f"/api/rooms/line-room/line-threads/{thread_id}/messages",
+        json={"content": "我补充一个问题。"},
+    )
+    assert reply.status_code == 200
+
+    edited = client.patch(
+        f"/api/rooms/line-room/line-comments/{first_comment_id}",
+        json={"content": "请重点阅读这一段。"},
+    )
+    assert edited.status_code == 200
+    assert edited.get_json()["comment"]["content"] == "请重点阅读这一段。"
+
+    with test_app.test_client() as second_client:
+        second_client.post("/api/rooms/line-room/auth", json={"passcode": "abcd1234"})
+        second_client.post("/api/rooms/line-room/profile", json={"nickname": "Guest"})
+        forbidden_edit = second_client.patch(
+            f"/api/rooms/line-room/line-comments/{first_comment_id}",
+            json={"content": "越权编辑"},
+        )
+        assert forbidden_edit.status_code == 403
+
+        forbidden_delete = second_client.delete(f"/api/rooms/line-room/line-comments/{first_comment_id}")
+        assert forbidden_delete.status_code == 403
+
+    deleted = client.delete(f"/api/rooms/line-room/line-comments/{first_comment_id}")
+    assert deleted.status_code == 200
+    assert deleted.get_json()["comment"]["is_deleted"] is True
+
+
+def test_discussion_summary_contains_line_feedback(client):
+    create_room(client, name="Summary Room", slug="summary-room", passcode="abcd1234")
+    set_profile(client, "summary-room", "Owner")
+    upload_payload = upload_pdf(client, slug="summary-room", filename="summary.pdf").get_json()
+    file_id = upload_payload["file_id"]
+
+    add_thread = client.post(
+        f"/api/rooms/summary-room/files/{file_id}/line-threads",
+        json={
+            "page_number": 1,
+            "quote_text": "Original quote",
+            "quote_prefix": "A",
+            "quote_suffix": "B",
+            "quote_start": 3,
+            "quote_end": 16,
+            "content": "原文评论内容",
+        },
+    )
+    assert add_thread.status_code == 200
+
+    with client.application.app_context():
+        room = app_module.Room.query.filter_by(slug="summary-room").first()
+        assert room is not None
+        summary_json = app_module.build_discussion_summary_json(room)
+
+    owners = summary_json.get("by_commented_owner") or []
+    assert owners
+
+    found_line_feedback = False
+    for owner_group in owners:
+        for file_item in owner_group.get("files", []):
+            line_feedback = file_item.get("line_feedback") or []
+            if line_feedback:
+                found_line_feedback = True
+                first_feedback = line_feedback[0]
+                assert first_feedback["page_number"] == 1
+                comments = first_feedback.get("comments") or []
+                assert comments
+                assert comments[0]["comment_content"] == "原文评论内容"
+                break
+        if found_line_feedback:
+            break
+
+    assert found_line_feedback is True
 
 
 def test_legacy_endpoints_still_work(client):

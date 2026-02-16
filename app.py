@@ -1,9 +1,10 @@
-import json
+﻿import json
 import os
 import re
 import threading
 import time
 import uuid
+import hashlib
 from datetime import datetime, timedelta
 from typing import Any, Dict, Optional
 
@@ -97,6 +98,16 @@ class Room(db.Model):
         cascade="all, delete-orphan",
         order_by=lambda: RoomDiscussionSummary.version.desc(),
     )
+    line_threads = db.relationship(
+        "PDFLineThread",
+        back_populates="room",
+        cascade="all, delete-orphan",
+    )
+    line_comments = db.relationship(
+        "PDFLineComment",
+        back_populates="room",
+        cascade="all, delete-orphan",
+    )
 
 
 class FileRecord(db.Model):
@@ -138,6 +149,17 @@ class FileRecord(db.Model):
     )
     read_states = db.relationship(
         "FileReadState",
+        back_populates="file",
+        cascade="all, delete-orphan",
+    )
+    line_threads = db.relationship(
+        "PDFLineThread",
+        back_populates="file",
+        cascade="all, delete-orphan",
+        order_by=lambda: PDFLineThread.updated_at.desc(),
+    )
+    line_comments = db.relationship(
+        "PDFLineComment",
         back_populates="file",
         cascade="all, delete-orphan",
     )
@@ -183,6 +205,56 @@ class FileComment(db.Model):
     created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
 
     file = db.relationship("FileRecord", back_populates="comments")
+
+
+class PDFLineThread(db.Model):
+    __tablename__ = "pdf_line_threads"
+    __table_args__ = (db.UniqueConstraint("file_id", "page_number", "anchor_hash", name="uq_line_thread_anchor"),)
+
+    id = db.Column(db.Integer, primary_key=True)
+    room_id = db.Column(db.Integer, db.ForeignKey("rooms.id", ondelete="CASCADE"), nullable=False, index=True)
+    file_id = db.Column(db.Integer, db.ForeignKey("files.id", ondelete="CASCADE"), nullable=False, index=True)
+    page_number = db.Column(db.Integer, nullable=False)
+    quote_text = db.Column(db.Text, nullable=True)
+    quote_prefix = db.Column(db.Text, nullable=True)
+    quote_suffix = db.Column(db.Text, nullable=True)
+    quote_start = db.Column(db.Integer, nullable=True)
+    quote_end = db.Column(db.Integer, nullable=True)
+    anchor_hash = db.Column(db.String(96), nullable=False, index=True)
+    created_by_token = db.Column(db.String(64), nullable=False, index=True)
+    created_by_nickname = db.Column(db.String(40), nullable=False)
+    is_resolved = db.Column(db.Boolean, nullable=False, default=False)
+    created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    room = db.relationship("Room", back_populates="line_threads")
+    file = db.relationship("FileRecord", back_populates="line_threads")
+    messages = db.relationship(
+        "PDFLineComment",
+        back_populates="thread",
+        cascade="all, delete-orphan",
+        order_by=lambda: PDFLineComment.id.asc(),
+    )
+
+
+class PDFLineComment(db.Model):
+    __tablename__ = "pdf_line_comments"
+
+    id = db.Column(db.Integer, primary_key=True)
+    room_id = db.Column(db.Integer, db.ForeignKey("rooms.id", ondelete="CASCADE"), nullable=False, index=True)
+    file_id = db.Column(db.Integer, db.ForeignKey("files.id", ondelete="CASCADE"), nullable=False, index=True)
+    thread_id = db.Column(db.Integer, db.ForeignKey("pdf_line_threads.id", ondelete="CASCADE"), nullable=False, index=True)
+    viewer_token = db.Column(db.String(64), nullable=False, index=True)
+    nickname = db.Column(db.String(40), nullable=False)
+    content = db.Column(db.Text, nullable=False)
+    is_deleted = db.Column(db.Boolean, nullable=False, default=False)
+    created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    edited_at = db.Column(db.DateTime, nullable=True)
+
+    room = db.relationship("Room", back_populates="line_comments")
+    file = db.relationship("FileRecord", back_populates="line_comments")
+    thread = db.relationship("PDFLineThread", back_populates="messages")
 
 
 class FileStar(db.Model):
@@ -260,6 +332,9 @@ db.Index("idx_file_read_states_room_updated_at", FileReadState.room_id, FileRead
 db.Index("idx_files_room_uploader_created_at", FileRecord.room_id, FileRecord.uploader_viewer_token, FileRecord.created_at)
 db.Index("idx_room_participants_room_last_seen_at", RoomParticipant.room_id, RoomParticipant.last_seen_at)
 db.Index("idx_room_discussion_summaries_room_updated_at", RoomDiscussionSummary.room_id, RoomDiscussionSummary.updated_at)
+db.Index("idx_line_threads_file_page_updated_at", PDFLineThread.file_id, PDFLineThread.page_number, PDFLineThread.updated_at)
+db.Index("idx_line_comments_thread_id", PDFLineComment.thread_id, PDFLineComment.id)
+db.Index("idx_line_comments_room_file_id", PDFLineComment.room_id, PDFLineComment.file_id, PDFLineComment.id)
 
 
 def normalize_database_url(url: str) -> str:
@@ -743,6 +818,268 @@ def register_routes(app: Flask) -> None:
         write_access_log(room_id=room.id, action="add_comment", file_id=file_id)
         return jsonify({"success": True, "comment": serialize_comment(comment)})
 
+    @app.get("/api/rooms/<room_slug>/files/<int:file_id>/line-threads")
+    def list_pdf_line_threads_api(room_slug: str, file_id: int) -> Any:
+        room, error_response = get_room_for_api(room_slug, require_auth=True)
+        if error_response:
+            return error_response
+
+        file_record = FileRecord.query.filter_by(id=file_id, room_id=room.id).first()
+        if file_record is None:
+            return jsonify({"success": False, "message": "File not found."}), 404
+        if get_extension(file_record.stored_name) != "pdf":
+            return jsonify({"success": False, "message": "Line threads are only available for PDF files."}), 400
+
+        viewer_token = get_room_viewer_token(room_slug)
+        page_raw = (request.args.get("page") or "").strip()
+        page_number = int(page_raw) if page_raw.isdigit() else None
+        if page_raw and (page_number is None or page_number <= 0):
+            return jsonify({"success": False, "message": "Query parameter 'page' must be a positive integer."}), 400
+
+        query = PDFLineThread.query.filter_by(room_id=room.id, file_id=file_id)
+        if page_number is not None:
+            query = query.filter(PDFLineThread.page_number == page_number)
+        threads = query.order_by(PDFLineThread.updated_at.desc(), PDFLineThread.id.desc()).all()
+
+        return jsonify(
+            {
+                "success": True,
+                "file": serialize_file(file_record, viewer_token=viewer_token),
+                "page_number": page_number,
+                "threads": [serialize_line_thread(thread, viewer_token) for thread in threads],
+            }
+        )
+
+    @app.post("/api/rooms/<room_slug>/files/<int:file_id>/line-threads")
+    def create_pdf_line_thread_api(room_slug: str, file_id: int) -> Any:
+        room, error_response = get_room_for_api(room_slug, require_auth=True)
+        if error_response:
+            return error_response
+
+        file_record = FileRecord.query.filter_by(id=file_id, room_id=room.id).first()
+        if file_record is None:
+            return jsonify({"success": False, "message": "File not found."}), 404
+        if get_extension(file_record.stored_name) != "pdf":
+            return jsonify({"success": False, "message": "Line threads are only available for PDF files."}), 400
+
+        viewer_token = get_room_viewer_token(room_slug)
+        viewer_nickname = get_room_viewer_nickname(room_slug)
+        if not viewer_token or not viewer_nickname:
+            return jsonify({"success": False, "message": "Please set your nickname before commenting."}), 400
+
+        data = request.get_json(silent=True) or {}
+        content = str(data.get("content") or "").strip()
+        if not content:
+            return jsonify({"success": False, "message": "Comment cannot be empty."}), 400
+        if len(content) > 300:
+            return jsonify({"success": False, "message": "Comment is too long (max 300 characters)."}), 400
+
+        page_raw = data.get("page_number")
+        try:
+            page_number = int(page_raw)
+        except Exception:
+            page_number = 0
+        if page_number <= 0:
+            return jsonify({"success": False, "message": "Field 'page_number' must be a positive integer."}), 400
+
+        quote_text = str(data.get("quote_text") or "").strip()
+        quote_prefix = str(data.get("quote_prefix") or "").strip()[:120]
+        quote_suffix = str(data.get("quote_suffix") or "").strip()[:120]
+
+        quote_start = data.get("quote_start")
+        quote_end = data.get("quote_end")
+        quote_start_int: Optional[int]
+        quote_end_int: Optional[int]
+        try:
+            quote_start_int = int(quote_start) if quote_start is not None else None
+        except Exception:
+            quote_start_int = None
+        try:
+            quote_end_int = int(quote_end) if quote_end is not None else None
+        except Exception:
+            quote_end_int = None
+
+        anchor_hash = compute_line_anchor_hash(
+            page_number=page_number,
+            quote_text=quote_text,
+            quote_prefix=quote_prefix,
+            quote_suffix=quote_suffix,
+            quote_start=quote_start_int,
+            quote_end=quote_end_int,
+        )
+
+        existing_thread = PDFLineThread.query.filter_by(
+            room_id=room.id,
+            file_id=file_id,
+            page_number=page_number,
+            anchor_hash=anchor_hash,
+        ).first()
+
+        created_new_thread = False
+        if existing_thread is None:
+            existing_thread = PDFLineThread(
+                room_id=room.id,
+                file_id=file_id,
+                page_number=page_number,
+                quote_text=quote_text,
+                quote_prefix=quote_prefix,
+                quote_suffix=quote_suffix,
+                quote_start=quote_start_int,
+                quote_end=quote_end_int,
+                anchor_hash=anchor_hash,
+                created_by_token=viewer_token,
+                created_by_nickname=viewer_nickname,
+                is_resolved=False,
+            )
+            db.session.add(existing_thread)
+            db.session.flush()
+            created_new_thread = True
+
+        message = PDFLineComment(
+            room_id=room.id,
+            file_id=file_id,
+            thread_id=existing_thread.id,
+            viewer_token=viewer_token,
+            nickname=viewer_nickname,
+            content=content,
+            is_deleted=False,
+        )
+        existing_thread.updated_at = datetime.utcnow()
+        db.session.add(message)
+        db.session.commit()
+
+        upsert_room_participant(
+            room=room,
+            viewer_token=viewer_token,
+            nickname=viewer_nickname,
+            action="add_line_comment",
+            increment_comment=1,
+        )
+        maybe_queue_discussion_summary(room=room, triggered_by_token=viewer_token)
+        write_access_log(room_id=room.id, action="add_line_comment", file_id=file_id)
+
+        return jsonify(
+            {
+                "success": True,
+                "created_new_thread": created_new_thread,
+                "thread": serialize_line_thread(existing_thread, viewer_token),
+                "comment": serialize_line_comment(message, viewer_token),
+            }
+        )
+
+    @app.post("/api/rooms/<room_slug>/line-threads/<int:thread_id>/messages")
+    def create_pdf_line_message_api(room_slug: str, thread_id: int) -> Any:
+        room, error_response = get_room_for_api(room_slug, require_auth=True)
+        if error_response:
+            return error_response
+
+        thread = PDFLineThread.query.filter_by(id=thread_id, room_id=room.id).first()
+        if thread is None:
+            return jsonify({"success": False, "message": "Line thread not found."}), 404
+
+        viewer_token = get_room_viewer_token(room_slug)
+        viewer_nickname = get_room_viewer_nickname(room_slug)
+        if not viewer_token or not viewer_nickname:
+            return jsonify({"success": False, "message": "Please set your nickname before replying."}), 400
+
+        data = request.get_json(silent=True) or {}
+        content = str(data.get("content") or "").strip()
+        if not content:
+            return jsonify({"success": False, "message": "Comment cannot be empty."}), 400
+        if len(content) > 300:
+            return jsonify({"success": False, "message": "Comment is too long (max 300 characters)."}), 400
+
+        message = PDFLineComment(
+            room_id=room.id,
+            file_id=thread.file_id,
+            thread_id=thread.id,
+            viewer_token=viewer_token,
+            nickname=viewer_nickname,
+            content=content,
+            is_deleted=False,
+        )
+        thread.updated_at = datetime.utcnow()
+        db.session.add(message)
+        db.session.commit()
+
+        upsert_room_participant(
+            room=room,
+            viewer_token=viewer_token,
+            nickname=viewer_nickname,
+            action="reply_line_comment",
+            increment_comment=1,
+        )
+        maybe_queue_discussion_summary(room=room, triggered_by_token=viewer_token)
+        write_access_log(room_id=room.id, action="reply_line_comment", file_id=thread.file_id)
+
+        return jsonify(
+            {
+                "success": True,
+                "thread": serialize_line_thread(thread, viewer_token),
+                "comment": serialize_line_comment(message, viewer_token),
+            }
+        )
+
+    @app.patch("/api/rooms/<room_slug>/line-comments/<int:comment_id>")
+    def edit_pdf_line_comment_api(room_slug: str, comment_id: int) -> Any:
+        room, error_response = get_room_for_api(room_slug, require_auth=True)
+        if error_response:
+            return error_response
+
+        comment = PDFLineComment.query.filter_by(id=comment_id, room_id=room.id).first()
+        if comment is None:
+            return jsonify({"success": False, "message": "Line comment not found."}), 404
+
+        viewer_token = get_room_viewer_token(room_slug)
+        if not viewer_token or comment.viewer_token != viewer_token:
+            return jsonify({"success": False, "message": "Only the comment author can edit this comment."}), 403
+        if comment.is_deleted:
+            return jsonify({"success": False, "message": "Deleted comments cannot be edited."}), 400
+
+        data = request.get_json(silent=True) or {}
+        content = str(data.get("content") or "").strip()
+        if not content:
+            return jsonify({"success": False, "message": "Comment cannot be empty."}), 400
+        if len(content) > 300:
+            return jsonify({"success": False, "message": "Comment is too long (max 300 characters)."}), 400
+
+        comment.content = content
+        comment.edited_at = datetime.utcnow()
+        comment.updated_at = datetime.utcnow()
+        if comment.thread is not None:
+            comment.thread.updated_at = datetime.utcnow()
+        db.session.commit()
+
+        maybe_queue_discussion_summary(room=room, triggered_by_token=viewer_token)
+        write_access_log(room_id=room.id, action="edit_line_comment", file_id=comment.file_id)
+        return jsonify({"success": True, "comment": serialize_line_comment(comment, viewer_token)})
+
+    @app.delete("/api/rooms/<room_slug>/line-comments/<int:comment_id>")
+    def delete_pdf_line_comment_api(room_slug: str, comment_id: int) -> Any:
+        room, error_response = get_room_for_api(room_slug, require_auth=True)
+        if error_response:
+            return error_response
+
+        comment = PDFLineComment.query.filter_by(id=comment_id, room_id=room.id).first()
+        if comment is None:
+            return jsonify({"success": False, "message": "Line comment not found."}), 404
+
+        viewer_token = get_room_viewer_token(room_slug)
+        if not viewer_token or comment.viewer_token != viewer_token:
+            return jsonify({"success": False, "message": "Only the comment author can delete this comment."}), 403
+
+        if not comment.is_deleted:
+            comment.is_deleted = True
+            comment.updated_at = datetime.utcnow()
+            if comment.thread is not None:
+                comment.thread.updated_at = datetime.utcnow()
+            db.session.commit()
+
+            maybe_queue_discussion_summary(room=room, triggered_by_token=viewer_token)
+            write_access_log(room_id=room.id, action="delete_line_comment", file_id=comment.file_id)
+
+        return jsonify({"success": True, "comment": serialize_line_comment(comment, viewer_token)})
+
     @app.put("/api/rooms/<room_slug>/files/<int:file_id>/star")
     def toggle_file_star_api(room_slug: str, file_id: int) -> Any:
         room, error_response = get_room_for_api(room_slug, require_auth=True)
@@ -1031,6 +1368,27 @@ def get_file_original_name(file_record: FileRecord) -> str:
     return file_record.stored_name
 
 
+def compute_line_anchor_hash(
+    page_number: int,
+    quote_text: str,
+    quote_prefix: str = "",
+    quote_suffix: str = "",
+    quote_start: Optional[int] = None,
+    quote_end: Optional[int] = None,
+) -> str:
+    payload = "|".join(
+        [
+            str(max(page_number, 1)),
+            (quote_text or "").strip(),
+            (quote_prefix or "").strip(),
+            (quote_suffix or "").strip(),
+            str(-1 if quote_start is None else int(quote_start)),
+            str(-1 if quote_end is None else int(quote_end)),
+        ]
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
 def get_client_ip() -> str:
     forwarded_for = request.headers.get("X-Forwarded-For", "")
     if forwarded_for:
@@ -1190,6 +1548,48 @@ def serialize_comment(comment: FileComment) -> Dict[str, Any]:
     }
 
 
+def serialize_line_comment(comment: PDFLineComment, viewer_token: Optional[str]) -> Dict[str, Any]:
+    display_content = "[评论已删除]" if comment.is_deleted else comment.content
+    return {
+        "id": comment.id,
+        "room_id": comment.room_id,
+        "file_id": comment.file_id,
+        "thread_id": comment.thread_id,
+        "nickname": comment.nickname,
+        "content": display_content,
+        "raw_content": comment.content,
+        "is_deleted": comment.is_deleted,
+        "is_mine": bool(viewer_token and comment.viewer_token == viewer_token),
+        "created_at": comment.created_at.isoformat() + "Z" if comment.created_at else None,
+        "updated_at": comment.updated_at.isoformat() + "Z" if comment.updated_at else None,
+        "edited_at": comment.edited_at.isoformat() + "Z" if comment.edited_at else None,
+    }
+
+
+def serialize_line_thread(thread: PDFLineThread, viewer_token: Optional[str]) -> Dict[str, Any]:
+    messages = [serialize_line_comment(item, viewer_token) for item in thread.messages]
+    return {
+        "id": thread.id,
+        "room_id": thread.room_id,
+        "file_id": thread.file_id,
+        "page_number": thread.page_number,
+        "quote_text": thread.quote_text or "",
+        "quote_prefix": thread.quote_prefix or "",
+        "quote_suffix": thread.quote_suffix or "",
+        "quote_start": thread.quote_start,
+        "quote_end": thread.quote_end,
+        "anchor_hash": thread.anchor_hash,
+        "created_by_token": thread.created_by_token,
+        "created_by_nickname": thread.created_by_nickname,
+        "is_resolved": thread.is_resolved,
+        "is_created_by_me": bool(viewer_token and thread.created_by_token == viewer_token),
+        "created_at": thread.created_at.isoformat() + "Z" if thread.created_at else None,
+        "updated_at": thread.updated_at.isoformat() + "Z" if thread.updated_at else None,
+        "messages": messages,
+        "message_count": len(messages),
+    }
+
+
 def serialize_participant(room_id: int, participant: RoomParticipant, viewer_token: Optional[str]) -> Dict[str, Any]:
     online_window_seconds = current_app.config["ONLINE_WINDOW_SECONDS"]
     is_online = participant.last_seen_at >= datetime.utcnow() - timedelta(seconds=online_window_seconds)
@@ -1229,6 +1629,7 @@ def serialize_participant(room_id: int, participant: RoomParticipant, viewer_tok
 
 def build_file_collab(file_id: int, viewer_token: Optional[str]) -> Dict[str, Any]:
     comment_count = FileComment.query.filter_by(file_id=file_id).count()
+    line_thread_count = PDFLineThread.query.filter_by(file_id=file_id).count()
     star_count = FileStar.query.filter_by(file_id=file_id).count()
     read_count = FileReadState.query.filter_by(file_id=file_id, is_read=True).count()
 
@@ -1241,6 +1642,7 @@ def build_file_collab(file_id: int, viewer_token: Optional[str]) -> Dict[str, An
 
     return {
         "comment_count": comment_count,
+        "line_thread_count": line_thread_count,
         "star_count": star_count,
         "read_count": read_count,
         "starred_by_me": starred_by_me,
@@ -1466,37 +1868,76 @@ def build_discussion_summary_json(room: Room) -> Dict[str, Any]:
         .order_by(FileComment.created_at.asc(), FileComment.id.asc())
         .all()
     )
+    line_threads = (
+        PDFLineThread.query.filter_by(room_id=room.id)
+        .order_by(PDFLineThread.created_at.asc(), PDFLineThread.id.asc())
+        .all()
+    )
+    line_comments = (
+        PDFLineComment.query.filter_by(room_id=room.id)
+        .order_by(PDFLineComment.created_at.asc(), PDFLineComment.id.asc())
+        .all()
+    )
 
     file_map = {file_record.id: file_record for file_record in room_files}
     grouped: Dict[str, Dict[str, Any]] = {}
 
-    for comment in comments:
-        file_record = file_map.get(comment.file_id)
-        if file_record is None:
-            continue
-
-        owner_nickname = (file_record.uploader_nickname or "未命名上传者").strip()
+    def get_or_create_file_item(file_record: FileRecord) -> Dict[str, Any]:
+        owner_nickname = (file_record.uploader_nickname or "未命名上传者").strip() or "未命名上传者"
         owner_group = grouped.setdefault(
             owner_nickname,
-            {
-                "owner_nickname": owner_nickname,
-                "files": {},
-                "claimable_actions": [],
-            },
+            {"owner_nickname": owner_nickname, "files": {}, "claimable_actions": []},
         )
-        file_group = owner_group["files"].setdefault(
+        return owner_group["files"].setdefault(
             file_record.id,
             {
                 "file_id": file_record.id,
                 "file_name": get_file_original_name(file_record),
                 "comment_details": [],
+                "line_feedback": [],
             },
         )
-        file_group["comment_details"].append(
+
+    for comment in comments:
+        file_record = file_map.get(comment.file_id)
+        if file_record is None:
+            continue
+        file_item = get_or_create_file_item(file_record)
+        file_item["comment_details"].append(
             {
                 "commenter_nickname": comment.nickname,
                 "comment_content": comment.content,
                 "created_at": comment.created_at.isoformat() + "Z",
+            }
+        )
+
+    line_messages_by_thread: Dict[int, list] = {}
+    for message in line_comments:
+        if message.is_deleted:
+            continue
+        line_messages_by_thread.setdefault(message.thread_id, []).append(
+            {
+                "commenter_nickname": message.nickname,
+                "comment_content": message.content,
+                "created_at": message.created_at.isoformat() + "Z",
+            }
+        )
+
+    for thread in line_threads:
+        file_record = file_map.get(thread.file_id)
+        if file_record is None:
+            continue
+        file_item = get_or_create_file_item(file_record)
+        file_item["line_feedback"].append(
+            {
+                "thread_id": thread.id,
+                "page_number": thread.page_number,
+                "quote_text": thread.quote_text or "",
+                "quote_prefix": thread.quote_prefix or "",
+                "quote_suffix": thread.quote_suffix or "",
+                "quote_start": thread.quote_start,
+                "quote_end": thread.quote_end,
+                "comments": line_messages_by_thread.get(thread.id, []),
             }
         )
 
@@ -1505,9 +1946,14 @@ def build_discussion_summary_json(room: Room) -> Dict[str, Any]:
         file_items = list(owner_group["files"].values())
         claim_actions = []
         for item in file_items:
+            if item["line_feedback"]:
+                first_line = item["line_feedback"][0]
+                first_quote = str(first_line.get("quote_text") or "").strip()
+                if first_quote:
+                    claim_actions.append(f"处理《{item['file_name']}》第{first_line['page_number']}页引用：{first_quote[:42]}")
             if item["comment_details"]:
                 first_comment = item["comment_details"][0]
-                claim_actions.append(f"跟进《{item['file_name']}》中的建议：{first_comment['comment_content'][:48]}")
+                claim_actions.append(f"跟进《{item['file_name']}》评论：{first_comment['comment_content'][:42]}")
         if not claim_actions:
             claim_actions = ["暂无明确认领事项，建议会后补充行动项。"]
 
@@ -1515,7 +1961,7 @@ def build_discussion_summary_json(room: Room) -> Dict[str, Any]:
             {
                 "owner_nickname": owner_name,
                 "files": file_items,
-                "claimable_actions": claim_actions[:5],
+                "claimable_actions": claim_actions[:6],
             }
         )
 
@@ -1525,14 +1971,47 @@ def build_discussion_summary_json(room: Room) -> Dict[str, Any]:
             "generated_at": datetime.utcnow().isoformat() + "Z",
             "total_files": len(room_files),
             "total_comments": len(comments),
+            "total_line_threads": len(line_threads),
+            "total_line_comments": sum(len(item) for item in line_messages_by_thread.values()),
         },
         "by_commented_owner": summary_groups,
         "cross_actions": [
-            "优先处理评论频次最高的文件并分配责任人。",
-            "对争议评论标注后续复盘时间与负责人。",
-            "将已完成行动项回填到房间评论中形成闭环。",
+            "优先处理高频评论与高频划线线程涉及的资料。",
+            "对有争议的引用片段补充统一结论，并明确负责人。",
+            "将会后完成情况回填到房间评论形成闭环。",
         ],
     }
+
+
+def enforce_verbatim_discussion_payload(base_payload: Dict[str, Any], ai_payload: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(ai_payload, dict):
+        return base_payload
+
+    result: Dict[str, Any] = {
+        "meeting_overview": ai_payload.get("meeting_overview") or base_payload.get("meeting_overview", {}),
+        "cross_actions": ai_payload.get("cross_actions") or base_payload.get("cross_actions", []),
+        "by_commented_owner": [],
+    }
+
+    ai_owner_map: Dict[str, Dict[str, Any]] = {}
+    for owner_group in ai_payload.get("by_commented_owner") or []:
+        if not isinstance(owner_group, dict):
+            continue
+        owner_name = str(owner_group.get("owner_nickname") or "").strip()
+        if owner_name:
+            ai_owner_map[owner_name] = owner_group
+
+    for source_owner in base_payload.get("by_commented_owner") or []:
+        owner_name = str(source_owner.get("owner_nickname") or "").strip()
+        ai_owner_group = ai_owner_map.get(owner_name, {})
+        merged_owner = {
+            "owner_nickname": owner_name,
+            "files": source_owner.get("files") or [],
+            "claimable_actions": ai_owner_group.get("claimable_actions") or source_owner.get("claimable_actions") or [],
+        }
+        result["by_commented_owner"].append(merged_owner)
+
+    return result
 
 
 def generate_ai_discussion_summary(base_payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -1548,8 +2027,10 @@ def generate_ai_discussion_summary(base_payload: Dict[str, Any]) -> Dict[str, An
     system_prompt = (
         "You are a meeting summarization assistant. Return strict JSON with keys: "
         "meeting_overview, by_commented_owner, cross_actions. "
-        "Each item in by_commented_owner must include owner_nickname, files, claimable_actions."
-        "comment_details[].comment_content must be copied exactly from input, no paraphrase/translation/shortening. "
+        "Each item in by_commented_owner must include owner_nickname, files, claimable_actions. "
+        "Hard constraints: "
+        "comment_details[].comment_content and line_feedback[].quote_text/comments[].comment_content "
+        "must be copied exactly from input, no paraphrase/translation/shortening."
     )
     user_prompt = (
         "基于下面的会议讨论原始结构，输出更清晰的中文总结JSON，保持字段结构不变，"
@@ -1577,7 +2058,7 @@ def generate_ai_discussion_summary(base_payload: Dict[str, Any]) -> Dict[str, An
     raw_content = str(content or "").strip()
     parsed = try_parse_summary_json(raw_content)
     if isinstance(parsed, dict) and parsed:
-        return parsed
+        return enforce_verbatim_discussion_payload(base_payload, parsed)
     return base_payload
 
 
@@ -1649,6 +2130,32 @@ def upgrade_schema_for_existing_databases() -> None:
                     "WHERE (original_name_full IS NULL OR original_name_full = '') AND original_name IS NOT NULL"
                 )
             )
+
+    # Lightweight migrator for line-thread collaboration tables.
+    db.metadata.create_all(
+        bind=db.engine,
+        tables=[PDFLineThread.__table__, PDFLineComment.__table__],
+        checkfirst=True,
+    )
+    with db.engine.begin() as conn:
+        conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS idx_line_threads_file_page_updated_at "
+                "ON pdf_line_threads (file_id, page_number, updated_at)"
+            )
+        )
+        conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS idx_line_comments_thread_id "
+                "ON pdf_line_comments (thread_id, id)"
+            )
+        )
+        conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS idx_line_comments_room_file_id "
+                "ON pdf_line_comments (room_id, file_id, id)"
+            )
+        )
 
 
 def write_access_log(room_id: int, action: str, file_id: Optional[int] = None) -> None:
@@ -2093,3 +2600,4 @@ app = create_app()
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)
+
