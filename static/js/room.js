@@ -104,6 +104,7 @@ const state = {
     open: false,
     fileId: null,
     pdfDoc: null,
+    loadingTask: null,
     pageNumber: 1,
     totalPages: 1,
     viewerScaleMode: "fit",
@@ -121,10 +122,14 @@ const state = {
     selectionCaptureTimer: null,
     selectionWarnAt: 0,
     selectionWarnCode: "",
+    pointerDownInPdf: false,
+    renderTask: null,
+    textLayerTask: null,
   },
 };
 
 let pdfWorkerConfigured = false;
+const PDFJS_CDN_BASE = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105";
 const READER_SELECTION_DEBOUNCE_MS = 80;
 const MIN_LINE_SELECTION_CHARS = 2;
 
@@ -169,7 +174,7 @@ async function ensurePdfReadable(fileUrl) {
   let response;
   try {
     response = await fetch(fileUrl, {
-      method: "GET",
+      method: "HEAD",
       credentials: "same-origin",
     });
   } catch (_error) {
@@ -178,13 +183,8 @@ async function ensurePdfReadable(fileUrl) {
     throw error;
   }
 
-  // Cancel streaming body to avoid unnecessary transfer after header check.
-  if (response.body?.cancel) {
-    try {
-      response.body.cancel();
-    } catch (_error) {
-      // no-op
-    }
+  if (response.status === 405 || response.status === 501) {
+    return;
   }
 
   if (response.status === 401) {
@@ -675,9 +675,69 @@ async function deleteFile(file) {
 function ensurePdfJsReady() {
   if (!window.pdfjsLib) throw new Error("PDF.js 未加载，无法打开阅读器。");
   if (!pdfWorkerConfigured) {
-    window.pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js";
+    window.pdfjsLib.GlobalWorkerOptions.workerSrc = `${PDFJS_CDN_BASE}/pdf.worker.min.js`;
     pdfWorkerConfigured = true;
   }
+}
+function getStablePdfDocumentOptions(fileUrl) {
+  return {
+    url: fileUrl,
+    withCredentials: true,
+    disableRange: true,
+    disableStream: true,
+    disableAutoFetch: false,
+    useSystemFonts: true,
+    cMapUrl: `${PDFJS_CDN_BASE}/cmaps/`,
+    cMapPacked: true,
+    standardFontDataUrl: `${PDFJS_CDN_BASE}/standard_fonts/`,
+  };
+}
+async function loadPdfDocumentStable(fileUrl) {
+  if (state.reader.loadingTask?.destroy) {
+    try {
+      state.reader.loadingTask.destroy();
+    } catch (_error) {
+      // no-op
+    }
+  }
+  const loadingTask = window.pdfjsLib.getDocument(getStablePdfDocumentOptions(fileUrl));
+  state.reader.loadingTask = loadingTask;
+  try {
+    return await loadingTask.promise;
+  } finally {
+    if (state.reader.loadingTask === loadingTask) {
+      state.reader.loadingTask = null;
+    }
+  }
+}
+function cancelReaderRenderTasks() {
+  if (state.reader.renderTask?.cancel) {
+    try {
+      state.reader.renderTask.cancel();
+    } catch (_error) {
+      // no-op
+    }
+  }
+  state.reader.renderTask = null;
+
+  if (state.reader.textLayerTask?.cancel) {
+    try {
+      state.reader.textLayerTask.cancel();
+    } catch (_error) {
+      // no-op
+    }
+  }
+  state.reader.textLayerTask = null;
+}
+function normalizePdfLoadError(error) {
+  if (!error) return new Error("PDF 加载失败，请刷新后重试。");
+  if (typeof error.status === "number" && error.status > 0) return error;
+  const name = String(error.name || "");
+  if (name === "MissingPDFException") return new Error("文件不存在或已删除。");
+  if (name === "PasswordException") return new Error("该 PDF 受密码保护，暂不支持在线阅读。");
+  if (name === "InvalidPDFException" || name === "FormatError") return new Error("PDF 解析失败，请重新上传文件后重试。");
+  if (name === "UnexpectedResponseException") return new Error("PDF 读取失败，请稍后重试。");
+  return new Error(error.message || "PDF 加载失败，请刷新后重试。");
 }
 function setReaderModalVisible(visible) { pdfReaderModal.hidden = !visible; syncBodyScrollLock(); }
 function clearPdfLayers() { pdfTextLayer.innerHTML = ""; pdfHighlightLayer.innerHTML = ""; }
@@ -744,10 +804,19 @@ function computeReaderScale(page) {
 }
 function resetReaderState() {
   stopReaderResizeObserver();
+  cancelReaderRenderTasks();
   if (state.reader.selectionCaptureTimer) {
     clearTimeout(state.reader.selectionCaptureTimer);
     state.reader.selectionCaptureTimer = null;
   }
+  if (state.reader.loadingTask?.destroy) {
+    try {
+      state.reader.loadingTask.destroy();
+    } catch (_error) {
+      // no-op
+    }
+  }
+  state.reader.loadingTask = null;
   state.reader.pdfDoc = null;
   state.reader.fileId = null;
   state.reader.pageNumber = 1;
@@ -763,6 +832,7 @@ function resetReaderState() {
   state.reader.selectedAnchor = null;
   state.reader.selectionWarnAt = 0;
   state.reader.selectionWarnCode = "";
+  state.reader.pointerDownInPdf = false;
   state.reader.renderNonce += 1;
   lineThreadsList.innerHTML = "";
   lineThreadsEmpty.hidden = false;
@@ -972,6 +1042,7 @@ async function renderPdfPage(resetThreads = false) {
   const nonce = ++state.reader.renderNonce;
   setPdfLoading(true);
   try {
+    cancelReaderRenderTasks();
     const page = await state.reader.pdfDoc.getPage(state.reader.pageNumber);
     if (nonce !== state.reader.renderNonce) return;
 
@@ -993,20 +1064,39 @@ async function renderPdfPage(resetThreads = false) {
     canvasContext.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
     canvasContext.imageSmoothingEnabled = true;
     canvasContext.imageSmoothingQuality = "high";
-    await page.render({ canvasContext, viewport }).promise;
+    state.reader.renderTask = page.render({ canvasContext, viewport });
+    await state.reader.renderTask.promise;
+    state.reader.renderTask = null;
 
     const content = await page.getTextContent();
     if (nonce !== state.reader.renderNonce) return;
     state.reader.hasTextLayer = (content.items || []).some((i) => normalizeWhitespace(i.str).length > 0);
     if (state.reader.hasTextLayer) {
-      await window.pdfjsLib.renderTextLayer({ textContentSource: content, container: pdfTextLayer, viewport, textDivs: [], enhanceTextSelection: true }).promise;
+      state.reader.textLayerTask = window.pdfjsLib.renderTextLayer({
+        textContentSource: content,
+        container: pdfTextLayer,
+        viewport,
+        textDivs: [],
+        enhanceTextSelection: true,
+      });
+      await state.reader.textLayerTask.promise;
+      state.reader.textLayerTask = null;
     }
     state.reader.textIndexMap = buildTextIndexMap();
     updateReaderPageInfo();
     updateSelectionHint();
     await loadLineThreads(resetThreads);
+  } catch (error) {
+    const name = String(error?.name || "");
+    const message = String(error?.message || "").toLowerCase();
+    if (name === "RenderingCancelledException" || message.includes("rendering cancelled")) {
+      return;
+    }
+    throw error;
   } finally {
-    setPdfLoading(false);
+    if (nonce === state.reader.renderNonce) {
+      setPdfLoading(false);
+    }
   }
 }
 
@@ -1032,12 +1122,16 @@ async function openPdfReader(fileId) {
   setReaderTab("line");
   setReaderModalVisible(true);
 
-  const task = window.pdfjsLib.getDocument({ url: file.url, withCredentials: true });
-  state.reader.pdfDoc = await task.promise;
-  state.reader.totalPages = state.reader.pdfDoc.numPages || 1;
-  ensureReaderResizeObserver();
-  await renderPdfPage(true);
-  startReaderThreadsPoller();
+  try {
+    state.reader.pdfDoc = await loadPdfDocumentStable(file.url);
+    state.reader.totalPages = state.reader.pdfDoc.numPages || 1;
+    ensureReaderResizeObserver();
+    await renderPdfPage(true);
+    startReaderThreadsPoller();
+  } catch (error) {
+    closePdfReader();
+    throw normalizePdfLoadError(error);
+  }
 }
 
 async function syncReaderAfterFileRefresh() {
@@ -1062,6 +1156,8 @@ function maybeShowSelectionWarning(code, message) {
 }
 function schedulePdfSelectionCapture(trigger = "selectionchange") {
   if (!state.reader.open || !state.reader.hasTextLayer) return;
+  if (trigger === "selectionchange" && !state.reader.pointerDownInPdf) return;
+  if (trigger === "pointerup" && !state.reader.pointerDownInPdf) return;
   if (state.reader.selectionCaptureTimer) clearTimeout(state.reader.selectionCaptureTimer);
   const waitMs = trigger === "pointerup" ? READER_SELECTION_DEBOUNCE_MS : READER_SELECTION_DEBOUNCE_MS + 20;
   state.reader.selectionCaptureTimer = setTimeout(() => {
@@ -1071,17 +1167,88 @@ function schedulePdfSelectionCapture(trigger = "selectionchange") {
 }
 function clearWindowSelection() { const sel = window.getSelection(); if (sel) sel.removeAllRanges(); }
 
+function getRangeOffsetInLayer(range, boundary) {
+  const offsetRange = document.createRange();
+  offsetRange.selectNodeContents(pdfTextLayer);
+  if (boundary === "start") {
+    offsetRange.setEnd(range.startContainer, range.startOffset);
+  } else {
+    offsetRange.setEnd(range.endContainer, range.endOffset);
+  }
+  return offsetRange.toString().length;
+}
+
 function buildAnchorFromSelection(text) {
   const clean = normalizeWhitespace(text);
   const full = state.reader.textIndexMap.text || "";
-  if (!clean || !full) return { page_number: state.reader.pageNumber, quote_text: clean, quote_prefix: "", quote_suffix: "", quote_start: null, quote_end: null };
+  if (!clean || !full) return {
+    page_number: state.reader.pageNumber,
+    quote_text: clean,
+    quote_prefix: "",
+    quote_suffix: "",
+    quote_start: null,
+    quote_end: null,
+    anchor_precision: "fallback",
+  };
   const idx = full.indexOf(text);
   if (idx < 0) {
     const nIdx = normalizeWhitespace(full).indexOf(clean);
-    if (nIdx < 0) return { page_number: state.reader.pageNumber, quote_text: clean, quote_prefix: "", quote_suffix: "", quote_start: null, quote_end: null };
-    return { page_number: state.reader.pageNumber, quote_text: clean, quote_prefix: normalizeWhitespace(full).slice(Math.max(0, nIdx - 30), nIdx), quote_suffix: normalizeWhitespace(full).slice(nIdx + clean.length, nIdx + clean.length + 30), quote_start: null, quote_end: null };
+    if (nIdx < 0) return {
+      page_number: state.reader.pageNumber,
+      quote_text: clean,
+      quote_prefix: "",
+      quote_suffix: "",
+      quote_start: null,
+      quote_end: null,
+      anchor_precision: "fallback",
+    };
+    return {
+      page_number: state.reader.pageNumber,
+      quote_text: clean,
+      quote_prefix: normalizeWhitespace(full).slice(Math.max(0, nIdx - 30), nIdx),
+      quote_suffix: normalizeWhitespace(full).slice(nIdx + clean.length, nIdx + clean.length + 30),
+      quote_start: null,
+      quote_end: null,
+      anchor_precision: "fallback",
+    };
   }
-  return { page_number: state.reader.pageNumber, quote_text: text, quote_prefix: full.slice(Math.max(0, idx - 30), idx), quote_suffix: full.slice(idx + text.length, idx + text.length + 30), quote_start: idx, quote_end: idx + text.length };
+  return {
+    page_number: state.reader.pageNumber,
+    quote_text: text,
+    quote_prefix: full.slice(Math.max(0, idx - 30), idx),
+    quote_suffix: full.slice(idx + text.length, idx + text.length + 30),
+    quote_start: idx,
+    quote_end: idx + text.length,
+    anchor_precision: "fallback",
+  };
+}
+
+function buildAnchorFromRange(range) {
+  const text = range.toString();
+  const clean = normalizeWhitespace(text);
+  if (!clean) return buildAnchorFromSelection(text);
+
+  try {
+    const start = getRangeOffsetInLayer(range, "start");
+    const end = getRangeOffsetInLayer(range, "end");
+    if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) {
+      return buildAnchorFromSelection(text);
+    }
+    const full = state.reader.textIndexMap.text || "";
+    const safeStart = Math.max(0, Math.min(full.length, start));
+    const safeEnd = Math.max(safeStart, Math.min(full.length, end));
+    return {
+      page_number: state.reader.pageNumber,
+      quote_text: text,
+      quote_prefix: full.slice(Math.max(0, safeStart - 30), safeStart),
+      quote_suffix: full.slice(safeEnd, Math.min(full.length, safeEnd + 30)),
+      quote_start: safeStart,
+      quote_end: safeEnd,
+      anchor_precision: "exact",
+    };
+  } catch (_error) {
+    return buildAnchorFromSelection(text);
+  }
 }
 
 function openSelectionComposer(anchor, focusComposer = false) {
@@ -1134,7 +1301,7 @@ function capturePdfSelection(trigger = "selectionchange") {
     }
     return;
   }
-  openSelectionComposer(buildAnchorFromSelection(text), true);
+  openSelectionComposer(buildAnchorFromRange(range), true);
   drawHighlight(range);
 }
 
@@ -1346,11 +1513,18 @@ lineSelectionCancelButton?.addEventListener("click", () => { cancelSelectionComp
 pageLevelCommentButton?.addEventListener("click", () => {
   openSelectionComposer({ page_number: state.reader.pageNumber, quote_text: "", quote_prefix: "", quote_suffix: "", quote_start: null, quote_end: null }, true);
 });
+pdfTextLayer?.addEventListener("pointerdown", () => {
+  state.reader.pointerDownInPdf = true;
+});
 document.addEventListener("selectionchange", () => {
   schedulePdfSelectionCapture("selectionchange");
 });
 window.addEventListener("pointerup", () => {
   schedulePdfSelectionCapture("pointerup");
+  state.reader.pointerDownInPdf = false;
+});
+window.addEventListener("pointercancel", () => {
+  state.reader.pointerDownInPdf = false;
 });
 
 window.addEventListener("keydown", (event) => {
