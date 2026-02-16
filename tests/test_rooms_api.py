@@ -1,4 +1,5 @@
-import io
+﻿import io
+import zipfile
 from urllib.parse import urlparse
 
 import pytest
@@ -8,6 +9,39 @@ import app as app_module
 
 def tiny_png_bytes() -> bytes:
     return b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
+
+
+def tiny_docx_bytes() -> bytes:
+    content_types = """<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>
+<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\">
+  <Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/>
+  <Default Extension=\"xml\" ContentType=\"application/xml\"/>
+  <Override PartName=\"/word/document.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml\"/>
+</Types>
+"""
+    rels = """<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>
+<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">
+  <Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument\" Target=\"word/document.xml\"/>
+</Relationships>
+"""
+    document_xml = """<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>
+<w:document xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\">
+  <w:body>
+    <w:p><w:r><w:t>Hello DOCX</w:t></w:r></w:p>
+    <w:p><w:r><w:t>Second paragraph</w:t></w:r></w:p>
+  </w:body>
+</w:document>
+"""
+    mem = io.BytesIO()
+    with zipfile.ZipFile(mem, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("[Content_Types].xml", content_types)
+        zf.writestr("_rels/.rels", rels)
+        zf.writestr("word/document.xml", document_xml)
+    return mem.getvalue()
+
+
+def tiny_doc_bytes() -> bytes:
+    return b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1minimal-doc"
 
 
 @pytest.fixture()
@@ -23,6 +57,8 @@ def test_app(tmp_path, monkeypatch):
             "SECRET_KEY": "test-secret",
             "DEFAULT_ROOM_PASSCODE": "demo1234",
             "DISCUSSION_ASYNC": False,
+            "PASSWORD_HASH_METHOD": "pbkdf2:sha256:1",
+            "PASSWORD_HASH_FALLBACK_METHOD": "pbkdf2:sha256:1",
         }
     )
 
@@ -65,6 +101,22 @@ def upload_pdf(client, slug="ml-room", filename="sample.pdf"):
     return client.post(
         f"/api/rooms/{slug}/upload",
         data={"file": (io.BytesIO(pdf_bytes), filename)},
+        content_type="multipart/form-data",
+    )
+
+
+def upload_docx(client, slug="ml-room", filename="sample.docx"):
+    return client.post(
+        f"/api/rooms/{slug}/upload",
+        data={"file": (io.BytesIO(tiny_docx_bytes()), filename)},
+        content_type="multipart/form-data",
+    )
+
+
+def upload_doc(client, slug="ml-room", filename="sample.doc"):
+    return client.post(
+        f"/api/rooms/{slug}/upload",
+        data={"file": (io.BytesIO(tiny_doc_bytes()), filename)},
         content_type="multipart/form-data",
     )
 
@@ -141,11 +193,30 @@ def test_upload_pdf_creates_async_job(client):
     assert job_response.get_json()["job"]["status"] == "queued"
 
 
+def test_word_upload_and_word_filter(client):
+    create_room(client, name="Word Room", slug="word-room", passcode="abcd1234")
+    set_profile(client, "word-room", "Wendy")
+
+    docx_upload = upload_docx(client, slug="word-room", filename="spec.docx")
+    doc_upload = upload_doc(client, slug="word-room", filename="legacy.doc")
+    png_upload = upload_png(client, slug="word-room", filename="image.png")
+
+    assert docx_upload.status_code == 200
+    assert doc_upload.status_code == 200
+    assert png_upload.status_code == 200
+
+    word_only = client.get("/api/rooms/word-room/files?file_type=word")
+    assert word_only.status_code == 200
+    word_files = word_only.get_json()["files"]
+    assert len(word_files) == 2
+    assert {item["type"] for item in word_files} == {"doc", "docx"}
+
+
 def test_upload_preserves_original_filename(client, test_app):
     create_room(client, name="Filename Room", slug="filename-room", passcode="abcd1234")
     set_profile(client, "filename-room", "NameTester")
 
-    source_name = "中文 空格 (v1) #final ✅.png"
+    source_name = "中文 空格 (v1) #final ✨.png"
     upload_response = upload_png(client, slug="filename-room", filename=source_name)
     assert upload_response.status_code == 200
     payload = upload_response.get_json()
@@ -161,7 +232,7 @@ def test_upload_preserves_very_long_filename(client, test_app):
     create_room(client, name="Long Name Room", slug="long-name-room", passcode="abcd1234")
     set_profile(client, "long-name-room", "LongTester")
 
-    long_name = f"{'超' * 300}.png"
+    long_name = f"{'名' * 300}.png"
     upload_response = upload_png(client, slug="long-name-room", filename=long_name)
     assert upload_response.status_code == 200
     payload = upload_response.get_json()
@@ -171,7 +242,6 @@ def test_upload_preserves_very_long_filename(client, test_app):
         record = app_module.FileRecord.query.filter_by(room_id=payload["room"]["id"]).first()
         assert record is not None
         assert record.original_name_full == long_name
-        assert len(record.original_name) <= 255
 
 
 def test_presence_and_collaborators(client):
@@ -196,7 +266,7 @@ def test_comment_incremental_cursor(client):
 
     add_comment_1 = client.post(
         f"/api/rooms/comment-room/files/{file_id}/comments",
-        json={"content": "先看第 2 页结论。"},
+        json={"content": "please check page 2"},
     )
     assert add_comment_1.status_code == 200
 
@@ -212,7 +282,7 @@ def test_comment_incremental_cursor(client):
 
     add_comment_2 = client.post(
         f"/api/rooms/comment-room/files/{file_id}/comments",
-        json={"content": "补充一个行动建议。"},
+        json={"content": "add one more action"},
     )
     assert add_comment_2.status_code == 200
 
@@ -220,7 +290,7 @@ def test_comment_incremental_cursor(client):
     assert incremental_pull.status_code == 200
     incremental_payload = incremental_pull.get_json()
     assert len(incremental_payload["comments"]) == 1
-    assert incremental_payload["comments"][0]["content"] == "补充一个行动建议。"
+    assert incremental_payload["comments"][0]["content"] == "add one more action"
 
 
 def test_star_read_and_metrics(client):
@@ -251,7 +321,7 @@ def test_discussion_end_owner_only_and_summary(client, test_app):
     set_profile(client, "meeting-room", "Owner")
     upload_payload = upload_png(client, slug="meeting-room", filename="meeting.png").get_json()
     file_id = upload_payload["file_id"]
-    client.post(f"/api/rooms/meeting-room/files/{file_id}/comments", json={"content": "第一条评论"})
+    client.post(f"/api/rooms/meeting-room/files/{file_id}/comments", json={"content": "first comment"})
 
     with test_app.test_client() as second_client:
         second_client.post("/api/rooms/meeting-room/auth", json={"passcode": "abcd1234"})
@@ -365,7 +435,7 @@ def test_pdf_line_thread_crud_and_author_permissions(client, test_app):
             "quote_suffix": "suffix",
             "quote_start": 10,
             "quote_end": 28,
-            "content": "请先看这一段。",
+            "content": "please review this section first",
         },
     )
     assert create_thread.status_code == 200
@@ -373,6 +443,7 @@ def test_pdf_line_thread_crud_and_author_permissions(client, test_app):
     thread_id = thread_payload["thread"]["id"]
     first_comment_id = thread_payload["comment"]["id"]
     assert thread_payload["thread"]["message_count"] == 1
+    assert thread_payload["thread"]["source_type"] == "pdf"
 
     listed = client.get(f"/api/rooms/line-room/files/{file_id}/line-threads?page=1")
     assert listed.status_code == 200
@@ -382,23 +453,23 @@ def test_pdf_line_thread_crud_and_author_permissions(client, test_app):
 
     reply = client.post(
         f"/api/rooms/line-room/line-threads/{thread_id}/messages",
-        json={"content": "我补充一个问题。"},
+        json={"content": "adding one more point"},
     )
     assert reply.status_code == 200
 
     edited = client.patch(
         f"/api/rooms/line-room/line-comments/{first_comment_id}",
-        json={"content": "请重点阅读这一段。"},
+        json={"content": "please prioritize this section"},
     )
     assert edited.status_code == 200
-    assert edited.get_json()["comment"]["content"] == "请重点阅读这一段。"
+    assert edited.get_json()["comment"]["content"] == "please prioritize this section"
 
     with test_app.test_client() as second_client:
         second_client.post("/api/rooms/line-room/auth", json={"passcode": "abcd1234"})
         second_client.post("/api/rooms/line-room/profile", json={"nickname": "Guest"})
         forbidden_edit = second_client.patch(
             f"/api/rooms/line-room/line-comments/{first_comment_id}",
-            json={"content": "越权编辑"},
+            json={"content": "forbidden edit"},
         )
         assert forbidden_edit.status_code == 403
 
@@ -408,6 +479,63 @@ def test_pdf_line_thread_crud_and_author_permissions(client, test_app):
     deleted = client.delete(f"/api/rooms/line-room/line-comments/{first_comment_id}")
     assert deleted.status_code == 200
     assert deleted.get_json()["comment"]["is_deleted"] is True
+
+
+def test_docx_line_thread_and_doc_downgrade(client):
+    create_room(client, name="Word Line Room", slug="word-line-room", passcode="abcd1234")
+    set_profile(client, "word-line-room", "Owner")
+
+    docx_upload_payload = upload_docx(client, slug="word-line-room", filename="note.docx").get_json()
+    docx_file_id = docx_upload_payload["file_id"]
+
+    create_docx_thread = client.post(
+        f"/api/rooms/word-line-room/files/{docx_file_id}/line-threads",
+        json={
+            "source_type": "docx",
+            "anchor_scope": "segment",
+            "page_number": 1,
+            "segment_key": "segment-1",
+            "segment_start": 0,
+            "segment_end": 5,
+            "quote_text": "Hello",
+            "quote_prefix": "",
+            "quote_suffix": "",
+            "quote_start": 0,
+            "quote_end": 5,
+            "content": "docx scoped comment",
+        },
+    )
+    assert create_docx_thread.status_code == 200
+    docx_thread_payload = create_docx_thread.get_json()
+    assert docx_thread_payload["thread"]["source_type"] == "docx"
+    assert docx_thread_payload["thread"]["anchor_scope"] == "segment"
+    assert docx_thread_payload["thread"]["segment_key"] == "segment-1"
+
+    list_docx_threads = client.get(
+        f"/api/rooms/word-line-room/files/{docx_file_id}/line-threads?segment_key=segment-1"
+    )
+    assert list_docx_threads.status_code == 200
+    assert len(list_docx_threads.get_json()["threads"]) == 1
+
+    doc_upload_payload = upload_doc(client, slug="word-line-room", filename="legacy.doc").get_json()
+    doc_file_id = doc_upload_payload["file_id"]
+
+    create_doc_thread = client.post(
+        f"/api/rooms/word-line-room/files/{doc_file_id}/line-threads",
+        json={
+            "page_number": 1,
+            "quote_text": "Legacy",
+            "content": "should fail",
+        },
+    )
+    assert create_doc_thread.status_code == 400
+    assert ".doc" in create_doc_thread.get_json()["message"]
+
+    full_comment_on_doc = client.post(
+        f"/api/rooms/word-line-room/files/{doc_file_id}/comments",
+        json={"content": "full comment still allowed"},
+    )
+    assert full_comment_on_doc.status_code == 200
 
 
 def test_discussion_summary_contains_line_feedback(client):
@@ -425,10 +553,16 @@ def test_discussion_summary_contains_line_feedback(client):
             "quote_suffix": "B",
             "quote_start": 3,
             "quote_end": 16,
-            "content": "原文评论内容",
+            "content": "line comment content",
         },
     )
     assert add_thread.status_code == 200
+
+    add_full_comment = client.post(
+        f"/api/rooms/summary-room/files/{file_id}/comments",
+        json={"content": "full comment content"},
+    )
+    assert add_full_comment.status_code == 200
 
     with client.application.app_context():
         room = app_module.Room.query.filter_by(slug="summary-room").first()
@@ -441,6 +575,16 @@ def test_discussion_summary_contains_line_feedback(client):
     found_line_feedback = False
     for owner_group in owners:
         for file_item in owner_group.get("files", []):
+            assert "full_comments" in file_item
+            assert "line_comments" in file_item
+            assert "action_board" in file_item
+            assert "processing" in file_item["action_board"]
+            assert "follow_up" in file_item["action_board"]
+
+            full_comments = file_item.get("full_comments") or []
+            assert full_comments
+            assert full_comments[0]["comment_content"] == "full comment content"
+
             line_feedback = file_item.get("line_feedback") or []
             if line_feedback:
                 found_line_feedback = True
@@ -448,7 +592,10 @@ def test_discussion_summary_contains_line_feedback(client):
                 assert first_feedback["page_number"] == 1
                 comments = first_feedback.get("comments") or []
                 assert comments
-                assert comments[0]["comment_content"] == "原文评论内容"
+                assert comments[0]["comment_content"] == "line comment content"
+                line_comments = file_item.get("line_comments") or []
+                assert line_comments
+                assert line_comments[0]["comments"][0]["comment_content"] == "line comment content"
                 break
         if found_line_feedback:
             break

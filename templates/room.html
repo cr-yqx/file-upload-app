@@ -57,13 +57,13 @@
                     <h2>上传资料</h2>
                     <form id="uploadForm" class="stack-form">
                         <div class="file-picker">
-                            <input type="file" id="fileInput" class="file-input-native" accept=".jpg,.jpeg,.png,.gif,.webp,.pdf" required>
+                            <input type="file" id="fileInput" class="file-input-native" accept=".jpg,.jpeg,.png,.gif,.webp,.pdf,.doc,.docx" required>
                             <button type="button" id="filePickerButton" class="btn-secondary file-picker-btn">选择文件</button>
                             <span id="filePickerName" class="file-picker-name">未选择文件</span>
                         </div>
                         <button type="submit" class="btn-primary" id="uploadButton">上传</button>
                     </form>
-                    <p class="tips">上传前必须先设置昵称。支持 JPG/JPEG/PNG/GIF/WEBP/PDF，单文件最大 10MB。</p>
+                    <p class="tips">上传前必须先设置昵称。支持 JPG/JPEG/PNG/GIF/WEBP/PDF/DOC/DOCX，单文件最大 10MB。</p>
                 </section>
 
                 <section class="glass card">
@@ -130,6 +130,10 @@
                         <div id="pdfCatalogList" class="catalog-list"></div>
                     </div>
                     <div class="catalog-section">
+                        <p>Word 文件</p>
+                        <div id="wordCatalogList" class="catalog-list"></div>
+                    </div>
+                    <div class="catalog-section">
                         <p>图片文件</p>
                         <div id="imageCatalogList" class="catalog-list"></div>
                     </div>
@@ -187,6 +191,13 @@
                             <div id="pdfTextLayer" class="pdf-text-layer"></div>
                             <div id="pdfHighlightLayer" class="pdf-highlight-layer"></div>
                         </div>
+                        <div id="docxStage" class="docx-stage" hidden>
+                            <div id="docxContent" class="docx-content"></div>
+                            <div id="docxHighlightLayer" class="docx-highlight-layer"></div>
+                        </div>
+                        <div id="docDowngradeNotice" class="doc-downgrade-notice" hidden>
+                            当前 `.doc` 文件仅支持下载与全文评论。请转换为 `.docx` 以启用划线评论。
+                        </div>
                     </div>
                     <p id="pdfSelectionHint" class="tips">拖动选择文本可发起划线评论。</p>
                     <button id="pageLevelCommentButton" type="button" class="btn-ghost" hidden>本页无文本层，发起页级评论</button>
@@ -237,6 +248,8 @@
         </div>
     </div>
 
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.1.6/purify.min.js" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.8.0/mammoth.browser.min.js" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
     <script src="{{ url_for('static', filename='js/room.js') }}"></script>
 </body>

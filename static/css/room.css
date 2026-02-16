@@ -1121,3 +1121,140 @@ button,
         justify-content: flex-start;
     }
 }
+/* summary layout enhancements */
+.summary-group {
+    padding: 0.65rem;
+    gap: 0.6rem;
+}
+
+.summary-owner-note {
+    margin: 0;
+    color: var(--muted);
+    font-size: 0.86rem;
+}
+
+.summary-file-card {
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    background: rgba(255, 255, 255, 0.9);
+    padding: 0.55rem;
+    display: grid;
+    gap: 0.5rem;
+}
+
+.summary-file-title {
+    margin: 0;
+    font-weight: 700;
+}
+
+.summary-section {
+    border: 1px solid rgba(20, 58, 88, 0.12);
+    border-radius: 10px;
+    padding: 0.45rem 0.5rem;
+    background: rgba(246, 250, 255, 0.92);
+}
+
+.summary-section h5 {
+    margin: 0 0 0.32rem;
+    font-size: 0.85rem;
+}
+
+.summary-section ul {
+    margin: 0;
+    padding-left: 1rem;
+    display: grid;
+    gap: 0.24rem;
+}
+
+.summary-divider {
+    height: 1px;
+    background: linear-gradient(90deg, transparent, var(--line-strong), transparent);
+}
+
+.action-board {
+    border: 1px solid rgba(182, 129, 40, 0.26);
+    border-radius: 10px;
+    background: rgba(255, 249, 237, 0.88);
+    padding: 0.45rem 0.5rem;
+    display: grid;
+    grid-template-columns: 1fr 1px 1fr;
+    gap: 0.45rem;
+    align-items: start;
+}
+
+.action-board h5 {
+    margin: 0 0 0.32rem;
+}
+
+.action-board ul {
+    margin: 0;
+    padding-left: 1rem;
+    display: grid;
+    gap: 0.22rem;
+}
+
+.action-board .summary-divider {
+    height: 100%;
+    min-height: 40px;
+    background: rgba(182, 129, 40, 0.3);
+}
+
+/* docx reader stage */
+.docx-stage {
+    position: relative;
+    margin: 0 auto;
+    width: min(100%, 980px);
+    min-height: 120px;
+    padding: 1rem 1.2rem;
+    box-shadow: 0 16px 36px rgba(9, 28, 46, 0.16);
+    border-radius: 8px;
+    background: #fff;
+}
+
+.docx-content {
+    position: relative;
+    z-index: 1;
+    color: #12273a;
+    line-height: 1.7;
+    user-select: text;
+    -webkit-user-select: text;
+    font-size: 1rem;
+}
+
+.docx-content [data-segment-key] {
+    position: relative;
+}
+
+.docx-content [data-segment-key]::selection,
+.docx-content [data-segment-key] *::selection {
+    background: rgba(74, 154, 255, 0.3);
+}
+
+.docx-highlight-layer {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    z-index: 2;
+}
+
+.doc-downgrade-notice {
+    border: 1px solid rgba(182, 129, 40, 0.3);
+    background: rgba(255, 249, 237, 0.92);
+    color: #7c5b20;
+    border-radius: 10px;
+    padding: 0.62rem 0.72rem;
+    font-size: 0.9rem;
+}
+
+@media (max-width: 900px) {
+    .action-board {
+        grid-template-columns: 1fr;
+    }
+
+    .action-board .summary-divider {
+        width: 100%;
+        height: 1px;
+        min-height: 1px;
+        background: rgba(182, 129, 40, 0.3);
+    }
+}

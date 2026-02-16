@@ -32,10 +32,13 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 
 db = SQLAlchemy()
 
-ALLOWED_EXTENSIONS = {"jpg", "jpeg", "png", "gif", "webp", "pdf"}
+ALLOWED_EXTENSIONS = {"jpg", "jpeg", "png", "gif", "webp", "pdf", "doc", "docx"}
 IMAGE_EXTENSIONS = {"jpg", "jpeg", "png", "gif", "webp"}
+WORD_EXTENSIONS = {"doc", "docx"}
 MIME_TYPES = {
     "pdf": "application/pdf",
+    "doc": "application/msword",
+    "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     "jpg": "image/jpeg",
     "jpeg": "image/jpeg",
     "png": "image/png",
@@ -221,6 +224,11 @@ class PDFLineThread(db.Model):
     quote_suffix = db.Column(db.Text, nullable=True)
     quote_start = db.Column(db.Integer, nullable=True)
     quote_end = db.Column(db.Integer, nullable=True)
+    source_type = db.Column(db.String(16), nullable=False, default="pdf")
+    anchor_scope = db.Column(db.String(16), nullable=False, default="text")
+    segment_key = db.Column(db.String(160), nullable=True)
+    segment_start = db.Column(db.Integer, nullable=True)
+    segment_end = db.Column(db.Integer, nullable=True)
     anchor_hash = db.Column(db.String(96), nullable=False, index=True)
     created_by_token = db.Column(db.String(64), nullable=False, index=True)
     created_by_nickname = db.Column(db.String(40), nullable=False)
@@ -334,6 +342,13 @@ db.Index("idx_files_room_uploader_created_at", FileRecord.room_id, FileRecord.up
 db.Index("idx_room_participants_room_last_seen_at", RoomParticipant.room_id, RoomParticipant.last_seen_at)
 db.Index("idx_room_discussion_summaries_room_updated_at", RoomDiscussionSummary.room_id, RoomDiscussionSummary.updated_at)
 db.Index("idx_line_threads_file_page_updated_at", PDFLineThread.file_id, PDFLineThread.page_number, PDFLineThread.updated_at)
+db.Index(
+    "idx_line_threads_file_source_segment_anchor",
+    PDFLineThread.file_id,
+    PDFLineThread.source_type,
+    PDFLineThread.segment_key,
+    PDFLineThread.anchor_hash,
+)
 db.Index("idx_line_comments_thread_id", PDFLineComment.thread_id, PDFLineComment.id)
 db.Index("idx_line_comments_room_file_id", PDFLineComment.room_id, PDFLineComment.file_id, PDFLineComment.id)
 
@@ -380,6 +395,8 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
         DEFAULT_ROOM_SLUG=os.getenv("DEFAULT_ROOM_SLUG", "demo"),
         DEFAULT_ROOM_NAME=os.getenv("DEFAULT_ROOM_NAME", "Demo Room"),
         DEFAULT_ROOM_PASSCODE=os.getenv("DEFAULT_ROOM_PASSCODE", "demo1234"),
+        PASSWORD_HASH_METHOD=os.getenv("PASSWORD_HASH_METHOD", "scrypt"),
+        PASSWORD_HASH_FALLBACK_METHOD=os.getenv("PASSWORD_HASH_FALLBACK_METHOD", "pbkdf2:sha256:600000"),
         SESSION_COOKIE_HTTPONLY=True,
         SESSION_COOKIE_SAMESITE="Lax",
     )
@@ -468,7 +485,7 @@ def register_routes(app: Flask) -> None:
         room = Room(
             name=room_name,
             slug=room_slug,
-            passcode_hash=generate_password_hash(passcode),
+            passcode_hash=hash_passcode(passcode),
             created_by_ip=get_client_ip(),
             owner_viewer_token=owner_viewer_token,
             discussion_status=DISCUSSION_STATUS_IDLE,
@@ -600,7 +617,7 @@ def register_routes(app: Flask) -> None:
         viewer_nickname = get_room_viewer_nickname(room_slug)
         uploader_token = (request.args.get("uploader_token") or "").strip() or None
         file_type = (request.args.get("file_type") or "all").strip().lower()
-        if file_type not in {"all", "image", "pdf"}:
+        if file_type not in {"all", "image", "pdf", "doc", "docx", "word"}:
             file_type = "all"
         selected_file_id_raw = (request.args.get("selected_file_id") or "").strip()
         selected_file_id = int(selected_file_id_raw) if selected_file_id_raw.isdigit() else None
@@ -613,8 +630,10 @@ def register_routes(app: Flask) -> None:
         filtered_files = []
         for file_record in room_files:
             extension = get_extension(file_record.stored_name)
-            current_type = "image" if extension in IMAGE_EXTENSIONS else "pdf"
-            if file_type != "all" and current_type != file_type:
+            current_type = get_file_type_from_extension(extension)
+            if file_type == "word" and current_type not in WORD_EXTENSIONS:
+                continue
+            if file_type != "all" and file_type != "word" and current_type != file_type:
                 continue
             filtered_files.append(file_record)
 
@@ -835,25 +854,36 @@ def register_routes(app: Flask) -> None:
         file_record = FileRecord.query.filter_by(id=file_id, room_id=room.id).first()
         if file_record is None:
             return jsonify({"success": False, "message": "File not found."}), 404
-        if get_extension(file_record.stored_name) != "pdf":
-            return jsonify({"success": False, "message": "Line threads are only available for PDF files."}), 400
+        extension = get_extension(file_record.stored_name)
+        file_type = get_file_type_from_extension(extension)
+        if file_type not in {"pdf", "docx", "doc"}:
+            return jsonify({"success": False, "message": "Line comments are only available for PDF and Word files."}), 400
 
         viewer_token = get_room_viewer_token(room_slug)
         page_raw = (request.args.get("page") or "").strip()
         page_number = int(page_raw) if page_raw.isdigit() else None
         if page_raw and (page_number is None or page_number <= 0):
             return jsonify({"success": False, "message": "Query parameter 'page' must be a positive integer."}), 400
+        segment_key = (request.args.get("segment_key") or "").strip() or None
 
         query = PDFLineThread.query.filter_by(room_id=room.id, file_id=file_id)
         if page_number is not None:
             query = query.filter(PDFLineThread.page_number == page_number)
-        threads = query.order_by(PDFLineThread.updated_at.desc(), PDFLineThread.id.desc()).all()
+        if segment_key is not None:
+            query = query.filter(PDFLineThread.segment_key == segment_key)
+
+        if page_number is None and segment_key is None:
+            threads = query.order_by(PDFLineThread.updated_at.desc(), PDFLineThread.id.desc()).limit(100).all()
+        else:
+            threads = query.order_by(PDFLineThread.updated_at.desc(), PDFLineThread.id.desc()).all()
 
         return jsonify(
             {
                 "success": True,
                 "file": serialize_file(file_record, viewer_token=viewer_token),
                 "page_number": page_number,
+                "segment_key": segment_key,
+                "source_type": file_type,
                 "threads": [serialize_line_thread(thread, viewer_token) for thread in threads],
             }
         )
@@ -867,8 +897,12 @@ def register_routes(app: Flask) -> None:
         file_record = FileRecord.query.filter_by(id=file_id, room_id=room.id).first()
         if file_record is None:
             return jsonify({"success": False, "message": "File not found."}), 404
-        if get_extension(file_record.stored_name) != "pdf":
-            return jsonify({"success": False, "message": "Line threads are only available for PDF files."}), 400
+        extension = get_extension(file_record.stored_name)
+        file_type = get_file_type_from_extension(extension)
+        if file_type not in {"pdf", "docx", "doc"}:
+            return jsonify({"success": False, "message": "Line comments are only available for PDF and DOCX files."}), 400
+        if file_type == "doc":
+            return jsonify({"success": False, "message": "`.doc` 请先转换为 `.docx` 后再进行划线评论。"}), 400
 
         viewer_token = get_room_viewer_token(room_slug)
         viewer_nickname = get_room_viewer_nickname(room_slug)
@@ -882,13 +916,25 @@ def register_routes(app: Flask) -> None:
         if len(content) > 300:
             return jsonify({"success": False, "message": "Comment is too long (max 300 characters)."}), 400
 
+        source_type = file_type
+        anchor_scope_raw = str(data.get("anchor_scope") or "").strip().lower()
+        anchor_scope = anchor_scope_raw or ("segment" if file_type == "docx" else "text")
+        if anchor_scope not in {"text", "page", "segment"}:
+            anchor_scope = "text" if file_type == "pdf" else "segment"
+        if file_type == "pdf" and anchor_scope == "segment":
+            anchor_scope = "text"
+        if file_type == "docx" and anchor_scope == "page":
+            anchor_scope = "segment"
+
         page_raw = data.get("page_number")
         try:
             page_number = int(page_raw)
         except Exception:
             page_number = 0
-        if page_number <= 0:
+        if file_type == "pdf" and page_number <= 0:
             return jsonify({"success": False, "message": "Field 'page_number' must be a positive integer."}), 400
+        if file_type == "docx" and page_number <= 0:
+            page_number = 1
 
         quote_text = str(data.get("quote_text") or "").strip()
         quote_prefix = str(data.get("quote_prefix") or "").strip()[:120]
@@ -907,6 +953,23 @@ def register_routes(app: Flask) -> None:
         except Exception:
             quote_end_int = None
 
+        segment_key = str(data.get("segment_key") or "").strip()
+        if file_type == "docx" and anchor_scope == "segment" and not segment_key:
+            return jsonify({"success": False, "message": "Field 'segment_key' is required for DOCX segment comments."}), 400
+
+        segment_start_raw = data.get("segment_start")
+        segment_end_raw = data.get("segment_end")
+        try:
+            segment_start = int(segment_start_raw) if segment_start_raw is not None else None
+        except Exception:
+            segment_start = None
+        try:
+            segment_end = int(segment_end_raw) if segment_end_raw is not None else None
+        except Exception:
+            segment_end = None
+        if segment_start is not None and segment_end is not None and segment_end <= segment_start:
+            return jsonify({"success": False, "message": "Field 'segment_end' must be greater than 'segment_start'."}), 400
+
         anchor_hash = compute_line_anchor_hash(
             page_number=page_number,
             quote_text=quote_text,
@@ -914,6 +977,11 @@ def register_routes(app: Flask) -> None:
             quote_suffix=quote_suffix,
             quote_start=quote_start_int,
             quote_end=quote_end_int,
+            source_type=source_type,
+            anchor_scope=anchor_scope,
+            segment_key=segment_key,
+            segment_start=segment_start,
+            segment_end=segment_end,
         )
 
         existing_thread = PDFLineThread.query.filter_by(
@@ -934,6 +1002,11 @@ def register_routes(app: Flask) -> None:
                 quote_suffix=quote_suffix,
                 quote_start=quote_start_int,
                 quote_end=quote_end_int,
+                source_type=source_type,
+                anchor_scope=anchor_scope,
+                segment_key=segment_key or None,
+                segment_start=segment_start,
+                segment_end=segment_end,
                 anchor_hash=anchor_hash,
                 created_by_token=viewer_token,
                 created_by_nickname=viewer_nickname,
@@ -1360,6 +1433,19 @@ def get_extension(filename: str) -> str:
     return filename.rsplit(".", 1)[1].lower()
 
 
+def get_file_type_from_extension(extension: str) -> str:
+    ext = (extension or "").lower()
+    if ext in IMAGE_EXTENSIONS:
+        return "image"
+    if ext == "pdf":
+        return "pdf"
+    if ext == "docx":
+        return "docx"
+    if ext == "doc":
+        return "doc"
+    return "other"
+
+
 def sanitize_original_filename(raw_filename: str, extension: str) -> str:
     normalized = str(raw_filename or "").replace("\\", "/").strip()
     basename = normalized.rsplit("/", 1)[-1]
@@ -1384,15 +1470,25 @@ def compute_line_anchor_hash(
     quote_suffix: str = "",
     quote_start: Optional[int] = None,
     quote_end: Optional[int] = None,
+    source_type: str = "pdf",
+    anchor_scope: str = "text",
+    segment_key: str = "",
+    segment_start: Optional[int] = None,
+    segment_end: Optional[int] = None,
 ) -> str:
     payload = "|".join(
         [
+            (source_type or "pdf").strip().lower(),
+            (anchor_scope or "text").strip().lower(),
             str(max(page_number, 1)),
             (quote_text or "").strip(),
             (quote_prefix or "").strip(),
             (quote_suffix or "").strip(),
             str(-1 if quote_start is None else int(quote_start)),
             str(-1 if quote_end is None else int(quote_end)),
+            (segment_key or "").strip(),
+            str(-1 if segment_start is None else int(segment_start)),
+            str(-1 if segment_end is None else int(segment_end)),
         ]
     )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
@@ -1524,6 +1620,26 @@ def build_legacy_file_url(stored_name: str) -> str:
     return request.host_url.rstrip("/") + f"/uploads/{stored_name}"
 
 
+def hash_passcode(passcode: str) -> str:
+    method = str(current_app.config.get("PASSWORD_HASH_METHOD", "scrypt") or "scrypt").strip()
+    fallback_method = str(
+        current_app.config.get("PASSWORD_HASH_FALLBACK_METHOD", "pbkdf2:sha256:600000")
+        or "pbkdf2:sha256:600000"
+    ).strip()
+    try:
+        return generate_password_hash(passcode, method=method)
+    except (ValueError, TypeError, MemoryError) as exc:
+        if fallback_method and fallback_method != method:
+            current_app.logger.warning(
+                "password hash method fallback: primary=%s fallback=%s reason=%s",
+                method,
+                fallback_method,
+                exc,
+            )
+            return generate_password_hash(passcode, method=fallback_method)
+        raise
+
+
 def serialize_room(room: Room) -> Dict[str, Any]:
     return {
         "id": room.id,
@@ -1613,7 +1729,12 @@ def serialize_line_thread(thread: PDFLineThread, viewer_token: Optional[str]) ->
         "id": thread.id,
         "room_id": thread.room_id,
         "file_id": thread.file_id,
+        "source_type": (thread.source_type or "pdf").lower(),
+        "anchor_scope": (thread.anchor_scope or "text").lower(),
         "page_number": thread.page_number,
+        "segment_key": thread.segment_key,
+        "segment_start": thread.segment_start,
+        "segment_end": thread.segment_end,
         "quote_text": thread.quote_text or "",
         "quote_prefix": thread.quote_prefix or "",
         "quote_suffix": thread.quote_suffix or "",
@@ -1644,11 +1765,12 @@ def serialize_participant(room_id: int, participant: RoomParticipant, viewer_tok
 
     uploads_payload = []
     for file_record in recent_uploads[:5]:
+        extension = get_extension(file_record.stored_name)
         uploads_payload.append(
             {
                 "id": file_record.id,
                 "original_name": get_file_original_name(file_record),
-                "type": "image" if get_extension(file_record.stored_name) in IMAGE_EXTENSIONS else "pdf",
+                "type": get_file_type_from_extension(extension),
             }
         )
 
@@ -1693,7 +1815,7 @@ def build_file_collab(file_id: int, viewer_token: Optional[str]) -> Dict[str, An
 
 def serialize_file(file_record: FileRecord, legacy: bool = False, viewer_token: Optional[str] = None) -> Dict[str, Any]:
     extension = get_extension(file_record.stored_name)
-    file_type = "image" if extension in IMAGE_EXTENSIONS else "pdf"
+    file_type = get_file_type_from_extension(extension)
     latest_job_id = file_record.jobs[0].id if file_record.jobs else None
 
     payload = {
@@ -1735,7 +1857,7 @@ def ensure_default_room() -> Room:
         default_room = Room(
             slug=default_room_slug,
             name=current_app.config["DEFAULT_ROOM_NAME"],
-            passcode_hash=generate_password_hash(current_app.config["DEFAULT_ROOM_PASSCODE"]),
+            passcode_hash=hash_passcode(current_app.config["DEFAULT_ROOM_PASSCODE"]),
             created_by_ip="system",
             discussion_status=DISCUSSION_STATUS_IDLE,
             discussion_summary_version=0,
@@ -1929,15 +2051,26 @@ def build_discussion_summary_json(room: Room) -> Dict[str, Any]:
         owner_nickname = (file_record.uploader_nickname or "未命名上传者").strip() or "未命名上传者"
         owner_group = grouped.setdefault(
             owner_nickname,
-            {"owner_nickname": owner_nickname, "files": {}, "claimable_actions": []},
+            {
+                "owner_nickname": owner_nickname,
+                "owner_summary": "",
+                "files": {},
+                "claimable_actions": [],
+                "action_board": {"processing": [], "follow_up": []},
+            },
         )
         return owner_group["files"].setdefault(
             file_record.id,
             {
                 "file_id": file_record.id,
                 "file_name": get_file_original_name(file_record),
+                "file_type": get_file_type_from_extension(get_extension(file_record.stored_name)),
+                "full_comments": [],
+                "line_comments": [],
                 "comment_details": [],
                 "line_feedback": [],
+                "file_takeaways": [],
+                "action_board": {"processing": [], "follow_up": []},
             },
         )
 
@@ -1946,13 +2079,13 @@ def build_discussion_summary_json(room: Room) -> Dict[str, Any]:
         if file_record is None:
             continue
         file_item = get_or_create_file_item(file_record)
-        file_item["comment_details"].append(
-            {
-                "commenter_nickname": comment.nickname,
-                "comment_content": comment.content,
-                "created_at": comment.created_at.isoformat() + "Z",
-            }
-        )
+        detail = {
+            "commenter_nickname": comment.nickname,
+            "comment_content": comment.content,
+            "created_at": comment.created_at.isoformat() + "Z",
+        }
+        file_item["full_comments"].append(detail)
+        file_item["comment_details"].append(detail)
 
     line_messages_by_thread: Dict[int, list] = {}
     for message in line_comments:
@@ -1971,40 +2104,79 @@ def build_discussion_summary_json(room: Room) -> Dict[str, Any]:
         if file_record is None:
             continue
         file_item = get_or_create_file_item(file_record)
-        file_item["line_feedback"].append(
-            {
-                "thread_id": thread.id,
-                "page_number": thread.page_number,
-                "quote_text": thread.quote_text or "",
-                "quote_prefix": thread.quote_prefix or "",
-                "quote_suffix": thread.quote_suffix or "",
-                "quote_start": thread.quote_start,
-                "quote_end": thread.quote_end,
-                "comments": line_messages_by_thread.get(thread.id, []),
-            }
-        )
+        thread_payload = {
+            "thread_id": thread.id,
+            "source_type": (thread.source_type or "pdf").lower(),
+            "anchor_scope": (thread.anchor_scope or "text").lower(),
+            "page_number": thread.page_number,
+            "segment_key": thread.segment_key,
+            "segment_start": thread.segment_start,
+            "segment_end": thread.segment_end,
+            "quote_text": thread.quote_text or "",
+            "quote_prefix": thread.quote_prefix or "",
+            "quote_suffix": thread.quote_suffix or "",
+            "quote_start": thread.quote_start,
+            "quote_end": thread.quote_end,
+            "comments": line_messages_by_thread.get(thread.id, []),
+        }
+        file_item["line_comments"].append(thread_payload)
+        file_item["line_feedback"].append(thread_payload)
 
     summary_groups = []
     for owner_name, owner_group in grouped.items():
         file_items = list(owner_group["files"].values())
-        claim_actions = []
+        owner_processing: list[str] = []
+        owner_follow_up: list[str] = []
+        claim_actions: list[str] = []
+
         for item in file_items:
-            if item["line_feedback"]:
-                first_line = item["line_feedback"][0]
-                first_quote = str(first_line.get("quote_text") or "").strip()
+            processing_actions: list[str] = []
+            follow_up_actions: list[str] = []
+
+            for line_item in item["line_comments"][:3]:
+                first_quote = str(line_item.get("quote_text") or "").strip()
                 if first_quote:
-                    claim_actions.append(f"处理《{item['file_name']}》第{first_line['page_number']}页引用：{first_quote[:42]}")
-            if item["comment_details"]:
-                first_comment = item["comment_details"][0]
-                claim_actions.append(f"跟进《{item['file_name']}》评论：{first_comment['comment_content'][:42]}")
+                    scope_prefix = (
+                        f"第{line_item['page_number']}页"
+                        if line_item.get("source_type") == "pdf"
+                        else f"段落 {line_item.get('segment_key') or '-'}"
+                    )
+                    processing_actions.append(f"处理《{item['file_name']}》{scope_prefix}引用：{first_quote[:42]}")
+
+            for full_comment in item["full_comments"][:3]:
+                follow_up_actions.append(f"跟进《{item['file_name']}》全文评论：{full_comment['comment_content'][:42]}")
+
+            if not processing_actions:
+                processing_actions.append(f"处理《{item['file_name']}》：补充结构化结论与负责人。")
+            if not follow_up_actions:
+                follow_up_actions.append(f"跟进《{item['file_name']}》：暂无全文评论，建议会后补充。")
+
+            item["action_board"]["processing"] = processing_actions[:4]
+            item["action_board"]["follow_up"] = follow_up_actions[:4]
+            item["file_takeaways"] = [
+                f"全文评论 {len(item['full_comments'])} 条，划线评论 {len(item['line_comments'])} 条。",
+                "优先处理高频被提及片段，并明确会后责任人。",
+            ]
+
+            owner_processing.extend(item["action_board"]["processing"])
+            owner_follow_up.extend(item["action_board"]["follow_up"])
+            claim_actions.extend(item["action_board"]["processing"][:2] + item["action_board"]["follow_up"][:2])
+
         if not claim_actions:
             claim_actions = ["暂无明确认领事项，建议会后补充行动项。"]
+
+        owner_group["action_board"]["processing"] = owner_processing[:6]
+        owner_group["action_board"]["follow_up"] = owner_follow_up[:6]
+        owner_group["owner_summary"] = f"共 {len(file_items)} 份文件被评论，建议先处理划线评论，再跟进全文评论。"
+        owner_group["claimable_actions"] = claim_actions[:6]
 
         summary_groups.append(
             {
                 "owner_nickname": owner_name,
+                "owner_summary": owner_group["owner_summary"],
                 "files": file_items,
-                "claimable_actions": claim_actions[:6],
+                "claimable_actions": owner_group["claimable_actions"],
+                "action_board": owner_group["action_board"],
             }
         )
 
@@ -2030,6 +2202,25 @@ def enforce_verbatim_discussion_payload(base_payload: Dict[str, Any], ai_payload
     if not isinstance(ai_payload, dict):
         return base_payload
 
+    def normalize_text_list(value: Any, fallback: list[str], max_items: int = 8) -> list[str]:
+        if not isinstance(value, list):
+            value = fallback
+        cleaned = [str(item).strip() for item in value if str(item).strip()]
+        return cleaned[:max_items] if cleaned else fallback[:max_items]
+
+    def normalize_action_board(value: Any, fallback: Dict[str, Any]) -> Dict[str, list[str]]:
+        fallback_processing = fallback.get("processing") or []
+        fallback_follow_up = fallback.get("follow_up") or []
+        if not isinstance(value, dict):
+            return {
+                "processing": normalize_text_list([], fallback_processing),
+                "follow_up": normalize_text_list([], fallback_follow_up),
+            }
+        return {
+            "processing": normalize_text_list(value.get("processing"), fallback_processing),
+            "follow_up": normalize_text_list(value.get("follow_up"), fallback_follow_up),
+        }
+
     result: Dict[str, Any] = {
         "meeting_overview": ai_payload.get("meeting_overview") or base_payload.get("meeting_overview", {}),
         "cross_actions": ai_payload.get("cross_actions") or base_payload.get("cross_actions", []),
@@ -2047,10 +2238,44 @@ def enforce_verbatim_discussion_payload(base_payload: Dict[str, Any], ai_payload
     for source_owner in base_payload.get("by_commented_owner") or []:
         owner_name = str(source_owner.get("owner_nickname") or "").strip()
         ai_owner_group = ai_owner_map.get(owner_name, {})
+        ai_file_map: Dict[str, Dict[str, Any]] = {}
+        for ai_file in ai_owner_group.get("files") or []:
+            if not isinstance(ai_file, dict):
+                continue
+            file_key = str(ai_file.get("file_name") or ai_file.get("file_id") or "").strip()
+            if file_key:
+                ai_file_map[file_key] = ai_file
+
+        merged_files = []
+        for source_file in source_owner.get("files") or []:
+            source_copy = dict(source_file)
+            file_key = str(source_file.get("file_name") or source_file.get("file_id") or "").strip()
+            ai_file = ai_file_map.get(file_key, {})
+
+            source_copy["file_takeaways"] = normalize_text_list(
+                ai_file.get("file_takeaways"), source_copy.get("file_takeaways") or []
+            )
+            source_copy["action_board"] = normalize_action_board(
+                ai_file.get("action_board"),
+                source_copy.get("action_board") or {"processing": [], "follow_up": []},
+            )
+            source_copy["comment_details"] = source_copy.get("full_comments") or source_copy.get("comment_details") or []
+            source_copy["line_feedback"] = source_copy.get("line_comments") or source_copy.get("line_feedback") or []
+            merged_files.append(source_copy)
+
         merged_owner = {
             "owner_nickname": owner_name,
-            "files": source_owner.get("files") or [],
-            "claimable_actions": ai_owner_group.get("claimable_actions") or source_owner.get("claimable_actions") or [],
+            "owner_summary": str(ai_owner_group.get("owner_summary") or source_owner.get("owner_summary") or "").strip(),
+            "files": merged_files,
+            "claimable_actions": normalize_text_list(
+                ai_owner_group.get("claimable_actions"),
+                source_owner.get("claimable_actions") or [],
+                max_items=10,
+            ),
+            "action_board": normalize_action_board(
+                ai_owner_group.get("action_board"),
+                source_owner.get("action_board") or {"processing": [], "follow_up": []},
+            ),
         }
         result["by_commented_owner"].append(merged_owner)
 
@@ -2070,9 +2295,10 @@ def generate_ai_discussion_summary(base_payload: Dict[str, Any]) -> Dict[str, An
     system_prompt = (
         "You are a meeting summarization assistant. Return strict JSON with keys: "
         "meeting_overview, by_commented_owner, cross_actions. "
-        "Each item in by_commented_owner must include owner_nickname, files, claimable_actions. "
+        "Each item in by_commented_owner must include owner_nickname, owner_summary, files, claimable_actions, action_board. "
+        "Each file item must include file_name, full_comments, line_comments, file_takeaways, action_board. "
         "Hard constraints: "
-        "comment_details[].comment_content and line_feedback[].quote_text/comments[].comment_content "
+        "full_comments[].comment_content and line_comments[].quote_text/comments[].comment_content "
         "must be copied exactly from input, no paraphrase/translation/shortening."
     )
     user_prompt = (
@@ -2181,10 +2407,34 @@ def upgrade_schema_for_existing_databases() -> None:
         checkfirst=True,
     )
     with db.engine.begin() as conn:
+        line_thread_columns = {column["name"] for column in inspector.get_columns("pdf_line_threads")}
+        if "source_type" not in line_thread_columns:
+            conn.execute(text("ALTER TABLE pdf_line_threads ADD COLUMN source_type VARCHAR(16) DEFAULT 'pdf'"))
+        if "anchor_scope" not in line_thread_columns:
+            conn.execute(text("ALTER TABLE pdf_line_threads ADD COLUMN anchor_scope VARCHAR(16) DEFAULT 'text'"))
+        if "segment_key" not in line_thread_columns:
+            conn.execute(text("ALTER TABLE pdf_line_threads ADD COLUMN segment_key VARCHAR(160)"))
+        if "segment_start" not in line_thread_columns:
+            conn.execute(text("ALTER TABLE pdf_line_threads ADD COLUMN segment_start INTEGER"))
+        if "segment_end" not in line_thread_columns:
+            conn.execute(text("ALTER TABLE pdf_line_threads ADD COLUMN segment_end INTEGER"))
+        conn.execute(
+            text(
+                "UPDATE pdf_line_threads "
+                "SET source_type = COALESCE(NULLIF(source_type, ''), 'pdf'), "
+                "anchor_scope = COALESCE(NULLIF(anchor_scope, ''), 'text')"
+            )
+        )
         conn.execute(
             text(
                 "CREATE INDEX IF NOT EXISTS idx_line_threads_file_page_updated_at "
                 "ON pdf_line_threads (file_id, page_number, updated_at)"
+            )
+        )
+        conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS idx_line_threads_file_source_segment_anchor "
+                "ON pdf_line_threads (file_id, source_type, segment_key, anchor_hash)"
             )
         )
         conn.execute(
