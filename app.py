@@ -511,6 +511,7 @@ def register_routes(app: Flask) -> None:
 
         mark_room_authorized(room.slug)
         viewer_token = ensure_room_viewer_token(room.slug)
+        ensure_room_owner_binding(room, viewer_token)
         upsert_room_participant(
             room=room,
             viewer_token=viewer_token,
@@ -529,6 +530,7 @@ def register_routes(app: Flask) -> None:
 
         viewer_token = get_room_viewer_token(room_slug)
         viewer_nickname = get_room_viewer_nickname(room_slug)
+        ensure_room_owner_binding(room, viewer_token)
         upsert_room_participant(
             room=room,
             viewer_token=viewer_token,
@@ -562,6 +564,7 @@ def register_routes(app: Flask) -> None:
             return jsonify({"success": False, "message": "Nickname must be between 2 and 20 characters."}), 400
 
         viewer_token = ensure_room_viewer_token(room_slug)
+        ensure_room_owner_binding(room, viewer_token)
         set_room_viewer_nickname(room_slug, nickname)
         upsert_room_participant(room=room, viewer_token=viewer_token, nickname=nickname, action="set_profile")
         write_access_log(room_id=room.id, action="set_profile")
@@ -593,6 +596,7 @@ def register_routes(app: Flask) -> None:
             return error_response
 
         viewer_token = get_room_viewer_token(room_slug)
+        ensure_room_owner_binding(room, viewer_token)
         viewer_nickname = get_room_viewer_nickname(room_slug)
         uploader_token = (request.args.get("uploader_token") or "").strip() or None
         file_type = (request.args.get("file_type") or "all").strip().lower()
@@ -1193,6 +1197,7 @@ def register_routes(app: Flask) -> None:
             return error_response
 
         viewer_token = get_room_viewer_token(room_slug)
+        ensure_room_owner_binding(room, viewer_token)
         if not viewer_token or room.owner_viewer_token != viewer_token:
             return jsonify({"success": False, "message": "Only the room owner can end discussion."}), 403
 
@@ -1437,6 +1442,17 @@ def ensure_room_viewer_token(room_slug: str) -> str:
     session[room_viewer_token_session_key(room_slug)] = token
     session.modified = True
     return token
+
+
+def ensure_room_owner_binding(room: Room, viewer_token: Optional[str]) -> bool:
+    if not viewer_token:
+        return False
+    if room.owner_viewer_token:
+        return room.owner_viewer_token == viewer_token
+
+    room.owner_viewer_token = viewer_token
+    db.session.commit()
+    return True
 
 
 def get_room_viewer_nickname(room_slug: str) -> str:

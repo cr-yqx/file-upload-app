@@ -491,7 +491,7 @@ function renderReaderGeneralComments() {
 }
 
 function renderDiscussionSummary() {
-  endDiscussionButton.hidden = !state.discussion?.is_owner;
+  endDiscussionButton.hidden = !(state.discussion?.is_owner || state.discussion?.owner_bound === false);
   const status = state.discussion?.status || "idle";
   discussionStatusText.textContent = status === "running" ? "讨论总结生成中，正在自动刷新..." : status === "done" ? "讨论总结已生成，后续新评论会继续重算。" : status === "failed" ? "讨论总结生成失败，可重新触发。" : "讨论尚未结束。";
 

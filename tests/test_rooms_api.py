@@ -272,6 +272,27 @@ def test_discussion_end_owner_only_and_summary(client, test_app):
         assert "by_commented_owner" in summary_payload["summary"]["summary_json"]
 
 
+def test_owner_binding_recovers_for_legacy_unbound_room(client, test_app):
+    create_room(client, name="Legacy Owner Room", slug="legacy-owner-room", passcode="abcd1234")
+    set_profile(client, "legacy-owner-room", "Owner")
+
+    with test_app.app_context():
+        room = app_module.Room.query.filter_by(slug="legacy-owner-room").first()
+        assert room is not None
+        room.owner_viewer_token = None
+        app_module.db.session.commit()
+
+    profile = client.get("/api/rooms/legacy-owner-room/profile")
+    assert profile.status_code == 200
+    profile_payload = profile.get_json()
+    assert profile_payload["discussion"]["owner_bound"] is True
+    assert profile_payload["discussion"]["is_owner"] is True
+
+    owner_end = client.post("/api/rooms/legacy-owner-room/discussion/end")
+    assert owner_end.status_code == 200
+    assert owner_end.get_json()["discussion"]["status"] in {"running", "done"}
+
+
 def test_delete_file_removes_metadata_and_asset(client):
     create_room(client, name="Delete Room", slug="delete-room", passcode="abcd1234")
     set_profile(client, "delete-room", "Frank")
