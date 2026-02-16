@@ -155,6 +155,45 @@ async function requestJson(url, options = {}) {
   return data;
 }
 
+async function ensurePdfReadable(fileUrl) {
+  let response;
+  try {
+    response = await fetch(fileUrl, {
+      method: "GET",
+      credentials: "same-origin",
+    });
+  } catch (_error) {
+    const error = new Error("文件地址不可达，请刷新后重试。");
+    error.status = 0;
+    throw error;
+  }
+
+  // Cancel streaming body to avoid unnecessary transfer after header check.
+  if (response.body?.cancel) {
+    try {
+      response.body.cancel();
+    } catch (_error) {
+      // no-op
+    }
+  }
+
+  if (response.status === 401) {
+    const error = new Error("房间授权过期，请重新输入口令。");
+    error.status = 401;
+    throw error;
+  }
+  if (response.status === 404) {
+    const error = new Error("文件不存在或已删除。");
+    error.status = 404;
+    throw error;
+  }
+  if (!response.ok) {
+    const error = new Error("文件地址不可达，请刷新后重试。");
+    error.status = response.status;
+    throw error;
+  }
+}
+
 function normalizeWhitespace(v) { return String(v || "").replace(/\s+/g, " ").trim(); }
 function formatTimestamp(v) { return (v || "").replace("T", " ").replace("Z", ""); }
 function getSelectedFile() { return state.files.find((x) => x.id === state.selectedFileId) || null; }
@@ -430,7 +469,7 @@ function renderReaderGeneralComments() {
     return;
   }
   if (!state.comments.length) {
-    readerGeneralCommentList.innerHTML = '<p class="tips">暂无通用评论。</p>';
+    readerGeneralCommentList.innerHTML = '<p class="tips">暂无全文评论。</p>';
     return;
   }
   state.comments.forEach((comment) => {
@@ -763,7 +802,7 @@ function renderLineThreads() {
   lineThreadsList.innerHTML = "";
   if (!state.reader.threads.length) {
     lineThreadsEmpty.hidden = false;
-    lineThreadsEmpty.textContent = "本页暂无划线线程。";
+    lineThreadsEmpty.textContent = "本页暂无划线评论。";
     clearHighlights();
     return;
   }
@@ -892,6 +931,7 @@ async function openPdfReader(fileId) {
   const file = getFileById(fileId);
   if (!file || file.type !== "pdf") return;
   ensurePdfJsReady();
+  await ensurePdfReadable(file.url);
   state.selectedFileId = file.id;
   renderFileList();
   await loadComments(true);
@@ -904,7 +944,7 @@ async function openPdfReader(fileId) {
   state.reader.selectedThreadId = null;
 
   pdfReaderTitle.textContent = file.original_name || file.filename;
-  pdfReaderSubtitle.textContent = "可划选文本并创建线程评论";
+  pdfReaderSubtitle.textContent = "可划选文本并创建划线评论";
   setReaderTab("line");
   setReaderModalVisible(true);
 
@@ -985,7 +1025,7 @@ async function submitLineSelectionThread() {
     cancelSelectionComposer(true);
     clearWindowSelection();
     await Promise.all([loadLineThreads(true), loadFiles(true), loadCollaborators(), loadDiscussionSummary(true)]);
-    showMessage("划线线程已发布。", "success");
+    showMessage("划线评论已发布。", "success");
   } finally {
     setButtonLoading(lineSelectionSubmitButton, false);
   }
@@ -1172,7 +1212,7 @@ generalCommentsTabButton?.addEventListener("click", () => setReaderTab("general"
 pdfPrevPageButton?.addEventListener("click", () => changeReaderPage(state.reader.pageNumber - 1));
 pdfNextPageButton?.addEventListener("click", () => changeReaderPage(state.reader.pageNumber + 1));
 pdfZoomSelect?.addEventListener("change", () => changeReaderZoom(pdfZoomSelect.value));
-lineSelectionSubmitButton?.addEventListener("click", () => submitLineSelectionThread().catch((e) => { if (e.status === 401) handleAuthExpired(); else showMessage(e.message || "发布划线线程失败。"); }));
+lineSelectionSubmitButton?.addEventListener("click", () => submitLineSelectionThread().catch((e) => { if (e.status === 401) handleAuthExpired(); else showMessage(e.message || "发布划线评论失败。"); }));
 lineSelectionCancelButton?.addEventListener("click", () => { cancelSelectionComposer(true); clearWindowSelection(); });
 pageLevelCommentButton?.addEventListener("click", () => {
   openSelectionComposer({ page_number: state.reader.pageNumber, quote_text: "", quote_prefix: "", quote_suffix: "", quote_start: null, quote_end: null });

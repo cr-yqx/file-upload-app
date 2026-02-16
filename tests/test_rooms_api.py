@@ -103,12 +103,20 @@ def test_upload_requires_profile_then_success(client):
     upload_payload = upload_response.get_json()
     assert upload_payload["file"]["uploader_nickname"] == "Alice"
     assert upload_payload["file"]["summary_status"] == "not_applicable"
+    assert upload_payload["file"]["url"].startswith("/uploads/img-room/")
+    parsed_abs = urlparse(upload_payload["file"]["absolute_url"])
+    assert parsed_abs.scheme in {"http", "https"}
+    assert parsed_abs.netloc
+    assert parsed_abs.path == upload_payload["file"]["url"]
 
     list_response = client.get("/api/rooms/img-room/files")
     assert list_response.status_code == 200
     list_payload = list_response.get_json()
     assert list_payload["viewer"]["has_profile"] is True
     assert list_payload["files"][0]["uploader_nickname"] == "Alice"
+    assert list_payload["files"][0]["url"].startswith("/uploads/img-room/")
+    parsed_list_abs = urlparse(list_payload["files"][0]["absolute_url"])
+    assert parsed_list_abs.path == list_payload["files"][0]["url"]
 
     uploader_token = list_payload["files"][0]["uploader_viewer_token"]
     filtered = client.get(f"/api/rooms/img-room/files?uploader_token={uploader_token}")
@@ -405,6 +413,8 @@ def test_legacy_endpoints_still_work(client):
     assert upload_response.status_code == 200
     payload = upload_response.get_json()
     assert payload["deprecated"] is True
+    assert payload["file"]["url"].startswith("http")
+    assert payload["file"]["absolute_url"] == payload["file"]["url"]
 
     list_response = client.get("/api/files")
     assert list_response.status_code == 200

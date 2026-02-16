@@ -27,6 +27,7 @@ from openai import OpenAI
 from pypdf import PdfReader
 from sqlalchemy import inspect, or_, text
 from werkzeug.security import check_password_hash, generate_password_hash
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 
 db = SQLAlchemy()
@@ -385,6 +386,9 @@ def create_app(test_config: Optional[Dict[str, Any]] = None) -> Flask:
 
     if test_config:
         app.config.update(test_config)
+
+    # Respect X-Forwarded-* headers behind reverse proxies (Railway, etc.).
+    app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_port=1)  # type: ignore[assignment]
 
     db.init_app(app)
 
@@ -1476,6 +1480,10 @@ def get_stored_file_path(room_slug: str, stored_name: str) -> str:
 
 
 def build_room_file_url(room_slug: str, stored_name: str) -> str:
+    return url_for("uploaded_file", room_slug=room_slug, stored_name=stored_name)
+
+
+def build_room_file_absolute_url(room_slug: str, stored_name: str) -> str:
     return request.host_url.rstrip("/") + url_for("uploaded_file", room_slug=room_slug, stored_name=stored_name)
 
 
@@ -1667,6 +1675,7 @@ def serialize_file(file_record: FileRecord, legacy: bool = False, viewer_token: 
         "modified": file_record.created_at.strftime("%Y-%m-%d %H:%M:%S"),
         "type": file_type,
         "url": build_room_file_url(file_record.room.slug, file_record.stored_name),
+        "absolute_url": build_room_file_absolute_url(file_record.room.slug, file_record.stored_name),
         "summary_status": file_record.summary_status,
         "summary_text": file_record.summary_text,
         "summary_json": file_record.summary_json,
@@ -1680,6 +1689,7 @@ def serialize_file(file_record: FileRecord, legacy: bool = False, viewer_token: 
 
     if legacy:
         payload["url"] = build_legacy_file_url(file_record.stored_name)
+        payload["absolute_url"] = payload["url"]
 
     return payload
 
@@ -1976,7 +1986,7 @@ def build_discussion_summary_json(room: Room) -> Dict[str, Any]:
         },
         "by_commented_owner": summary_groups,
         "cross_actions": [
-            "优先处理高频评论与高频划线线程涉及的资料。",
+            "优先处理高频评论与高频划线评论涉及的资料。",
             "对有争议的引用片段补充统一结论，并明确负责人。",
             "将会后完成情况回填到房间评论形成闭环。",
         ],
