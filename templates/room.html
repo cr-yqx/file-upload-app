@@ -168,8 +168,12 @@
                     <span id="pdfPageInfo" class="chip">1 / 1</span>
                     <button id="pdfNextPageButton" type="button" class="btn-secondary">下一页</button>
                     <select id="pdfZoomSelect" aria-label="缩放">
+                        <option value="0.8">80%</option>
                         <option value="1">100%</option>
                         <option value="1.25">125%</option>
+                        <option value="1.5">150%</option>
+                        <option value="1.75">175%</option>
+                        <option value="2">200%</option>
                     </select>
                     <button id="closePdfReaderButton" type="button" class="btn-ghost">关闭</button>
                 </div>
@@ -199,7 +203,7 @@
                             <p class="selection-quote" id="lineSelectionQuote"></p>
                             <textarea id="lineSelectionInput" maxlength="300" placeholder="基于选中内容写评论..." rows="3"></textarea>
                             <div class="line-selection-actions">
-                                <button id="lineSelectionSubmitButton" type="button" class="btn-primary">发布线程</button>
+                                <button id="lineSelectionSubmitButton" type="button" class="btn-primary">发布划线评论</button>
                                 <button id="lineSelectionCancelButton" type="button" class="btn-secondary">取消</button>
                             </div>
                         </div>

@@ -716,8 +716,8 @@ button,
 
 .pdf-reader-shell {
     position: relative;
-    width: min(80vw, 1320px);
-    height: min(80vh, 860px);
+    width: min(86vw, 1380px);
+    height: min(86vh, 900px);
     display: grid;
     grid-template-rows: auto 1fr;
     gap: 0.7rem;
@@ -767,8 +767,8 @@ button,
 .pdf-reader-canvas-wrap {
     border: 1px solid var(--line);
     border-radius: var(--radius-md);
-    background: rgba(247, 250, 254, 0.92);
-    padding: 0.58rem;
+    background: linear-gradient(180deg, rgba(247, 251, 255, 0.98), rgba(241, 247, 253, 0.95));
+    padding: 0.5rem;
     display: grid;
     grid-template-rows: 1fr auto;
     gap: 0.4rem;
@@ -780,9 +780,9 @@ button,
     overflow: auto;
     position: relative;
     border-radius: var(--radius-sm);
-    background: #fff;
+    background: linear-gradient(180deg, #f7fbff, #eef4fa);
     border: 1px solid rgba(22, 68, 104, 0.18);
-    padding: 0.45rem;
+    padding: 0.6rem;
 }
 
 .pdf-page-stage {
@@ -790,6 +790,9 @@ button,
     margin: 0 auto;
     width: fit-content;
     min-height: 120px;
+    box-shadow: 0 16px 36px rgba(9, 28, 46, 0.16);
+    border-radius: 8px;
+    overflow: hidden;
 }
 
 .pdf-canvas-container canvas {
@@ -797,10 +800,11 @@ button,
     margin: 0;
     max-width: none;
     height: auto;
+    background: #fff;
 }
 
 #pdfCanvasContainer.loading::after {
-    content: "È°µÈù¢Ê∏≤Êüì‰∏≠...";
+    content: "“≥√Ê‰÷»æ÷–...";
     position: absolute;
     left: 50%;
     top: 50%;
@@ -821,17 +825,32 @@ button,
 }
 
 .pdf-text-layer {
-    opacity: 0.21;
+    opacity: 1;
     line-height: 1;
+    user-select: text;
+    -webkit-user-select: text;
+    text-size-adjust: none;
+    -webkit-text-size-adjust: none;
 }
 
 .pdf-text-layer span,
 .pdf-text-layer br {
     color: transparent;
+    -webkit-text-fill-color: transparent;
     position: absolute;
     white-space: pre;
     transform-origin: 0% 0%;
     cursor: text;
+    user-select: text;
+    -webkit-user-select: text;
+}
+
+.pdf-text-layer span::selection {
+    background: rgba(74, 154, 255, 0.34);
+}
+
+.pdf-text-layer br::selection {
+    background: rgba(74, 154, 255, 0.34);
 }
 
 .pdf-highlight-layer {

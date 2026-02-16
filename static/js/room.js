@@ -106,17 +106,27 @@ const state = {
     pdfDoc: null,
     pageNumber: 1,
     totalPages: 1,
-    zoom: 1,
+    viewerScaleMode: "fit",
+    userZoomFactor: 1,
+    fitScale: 1,
+    effectiveScale: 1,
     hasTextLayer: false,
     textIndexMap: { text: "", nodes: [] },
     threads: [],
     selectedThreadId: null,
     selectedAnchor: null,
     renderNonce: 0,
+    resizeObserver: null,
+    resizeDebounceTimer: null,
+    selectionCaptureTimer: null,
+    selectionWarnAt: 0,
+    selectionWarnCode: "",
   },
 };
 
 let pdfWorkerConfigured = false;
+const READER_SELECTION_DEBOUNCE_MS = 80;
+const MIN_LINE_SELECTION_CHARS = 2;
 
 function setAuthorized(next) { state.isAuthorized = next; authSection.hidden = next; workspace.hidden = !next; }
 function setLoading(v) { loading.hidden = !v; }
@@ -673,8 +683,12 @@ function setReaderModalVisible(visible) { pdfReaderModal.hidden = !visible; sync
 function clearPdfLayers() { pdfTextLayer.innerHTML = ""; pdfHighlightLayer.innerHTML = ""; }
 function setPdfLoading(loadingState) {
   pdfCanvasContainer.classList.toggle("loading", !!loadingState);
-  pdfPrevPageButton.disabled = loadingState;
-  pdfNextPageButton.disabled = loadingState;
+  if (loadingState) {
+    pdfPrevPageButton.disabled = true;
+    pdfNextPageButton.disabled = true;
+  } else {
+    updateReaderPageInfo();
+  }
   pdfZoomSelect.disabled = loadingState;
 }
 function updateReaderPageInfo() {
@@ -682,17 +696,73 @@ function updateReaderPageInfo() {
   pdfPrevPageButton.disabled = state.reader.pageNumber <= 1;
   pdfNextPageButton.disabled = state.reader.pageNumber >= state.reader.totalPages;
 }
+function getReaderContainerInnerWidth() {
+  if (!pdfCanvasContainer) return 0;
+  const styles = window.getComputedStyle(pdfCanvasContainer);
+  const paddingLeft = Number.parseFloat(styles.paddingLeft || "0");
+  const paddingRight = Number.parseFloat(styles.paddingRight || "0");
+  return Math.max(0, pdfCanvasContainer.clientWidth - paddingLeft - paddingRight);
+}
+function stopReaderResizeObserver() {
+  if (state.reader.resizeDebounceTimer) {
+    clearTimeout(state.reader.resizeDebounceTimer);
+    state.reader.resizeDebounceTimer = null;
+  }
+  if (state.reader.resizeObserver) {
+    state.reader.resizeObserver.disconnect();
+    state.reader.resizeObserver = null;
+  }
+}
+function ensureReaderResizeObserver() {
+  stopReaderResizeObserver();
+  if (!window.ResizeObserver) return;
+  state.reader.resizeObserver = new ResizeObserver(() => {
+    if (!state.reader.open || !state.reader.pdfDoc) return;
+    if (state.reader.resizeDebounceTimer) clearTimeout(state.reader.resizeDebounceTimer);
+    state.reader.resizeDebounceTimer = setTimeout(() => {
+      state.reader.resizeDebounceTimer = null;
+      renderPdfPage(false).catch((error) => {
+        showMessage(error.message || "窗口变化后重绘失败。");
+      });
+    }, 120);
+  });
+  state.reader.resizeObserver.observe(pdfCanvasContainer);
+}
+function computeReaderScale(page) {
+  const baseViewport = page.getViewport({ scale: 1 });
+  const userFactor = Number.isFinite(state.reader.userZoomFactor) && state.reader.userZoomFactor > 0 ? state.reader.userZoomFactor : 1;
+  let fitScale = 1;
+  if (state.reader.viewerScaleMode === "fit") {
+    const innerWidth = getReaderContainerInnerWidth();
+    if (innerWidth > 0 && baseViewport.width > 0) {
+      fitScale = innerWidth / baseViewport.width;
+    }
+  }
+  state.reader.fitScale = Math.max(0.2, Math.min(fitScale, 6));
+  state.reader.effectiveScale = Math.max(0.2, Math.min(state.reader.fitScale * userFactor, 6));
+  return state.reader.effectiveScale;
+}
 function resetReaderState() {
+  stopReaderResizeObserver();
+  if (state.reader.selectionCaptureTimer) {
+    clearTimeout(state.reader.selectionCaptureTimer);
+    state.reader.selectionCaptureTimer = null;
+  }
   state.reader.pdfDoc = null;
   state.reader.fileId = null;
   state.reader.pageNumber = 1;
   state.reader.totalPages = 1;
-  state.reader.zoom = 1;
+  state.reader.viewerScaleMode = "fit";
+  state.reader.userZoomFactor = 1;
+  state.reader.fitScale = 1;
+  state.reader.effectiveScale = 1;
   state.reader.hasTextLayer = false;
   state.reader.textIndexMap = { text: "", nodes: [] };
   state.reader.threads = [];
   state.reader.selectedThreadId = null;
   state.reader.selectedAnchor = null;
+  state.reader.selectionWarnAt = 0;
+  state.reader.selectionWarnCode = "";
   state.reader.renderNonce += 1;
   lineThreadsList.innerHTML = "";
   lineThreadsEmpty.hidden = false;
@@ -705,6 +775,7 @@ function resetReaderState() {
 function closePdfReader() {
   if (!state.reader.open) return;
   if (state.pollers.readerThreads) { clearInterval(state.pollers.readerThreads); state.pollers.readerThreads = null; }
+  clearWindowSelection();
   state.reader.open = false;
   resetReaderState();
   setReaderModalVisible(false);
@@ -891,7 +962,7 @@ function updateSelectionHint() {
     pdfSelectionHint.textContent = "拖动选择文本可发起划线评论。";
     pageLevelCommentButton.hidden = true;
   } else {
-    pdfSelectionHint.textContent = "当前页没有文本层，可发起页级评论。";
+    pdfSelectionHint.textContent = "当前页无可选文本，已切换页级评论。";
     pageLevelCommentButton.hidden = false;
   }
 }
@@ -903,15 +974,27 @@ async function renderPdfPage(resetThreads = false) {
   try {
     const page = await state.reader.pdfDoc.getPage(state.reader.pageNumber);
     if (nonce !== state.reader.renderNonce) return;
-    const viewport = page.getViewport({ scale: state.reader.zoom });
-    pdfCanvas.width = Math.ceil(viewport.width);
-    pdfCanvas.height = Math.ceil(viewport.height);
+
+    const scale = computeReaderScale(page);
+    const viewport = page.getViewport({ scale });
+    const devicePixelRatio = Math.max(1, window.devicePixelRatio || 1);
+    pdfCanvas.width = Math.ceil(viewport.width * devicePixelRatio);
+    pdfCanvas.height = Math.ceil(viewport.height * devicePixelRatio);
     pdfCanvas.style.width = `${viewport.width}px`;
     pdfCanvas.style.height = `${viewport.height}px`;
     pdfPageStage.style.width = `${viewport.width}px`;
     pdfPageStage.style.height = `${viewport.height}px`;
     clearPdfLayers();
-    await page.render({ canvasContext: pdfCanvas.getContext("2d", { alpha: false }), viewport }).promise;
+
+    const canvasContext = pdfCanvas.getContext("2d", { alpha: false });
+    if (!canvasContext) throw new Error("浏览器不支持 PDF 画布渲染。");
+    canvasContext.setTransform(1, 0, 0, 1, 0, 0);
+    canvasContext.clearRect(0, 0, pdfCanvas.width, pdfCanvas.height);
+    canvasContext.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
+    canvasContext.imageSmoothingEnabled = true;
+    canvasContext.imageSmoothingQuality = "high";
+    await page.render({ canvasContext, viewport }).promise;
+
     const content = await page.getTextContent();
     if (nonce !== state.reader.renderNonce) return;
     state.reader.hasTextLayer = (content.items || []).some((i) => normalizeWhitespace(i.str).length > 0);
@@ -938,7 +1021,8 @@ async function openPdfReader(fileId) {
 
   state.reader.open = true;
   state.reader.fileId = file.id;
-  state.reader.zoom = Number.parseFloat(pdfZoomSelect.value || "1") || 1;
+  state.reader.viewerScaleMode = "fit";
+  state.reader.userZoomFactor = Number.parseFloat(pdfZoomSelect.value || "1") || 1;
   state.reader.pageNumber = 1;
   state.reader.selectedAnchor = null;
   state.reader.selectedThreadId = null;
@@ -951,6 +1035,7 @@ async function openPdfReader(fileId) {
   const task = window.pdfjsLib.getDocument({ url: file.url, withCredentials: true });
   state.reader.pdfDoc = await task.promise;
   state.reader.totalPages = state.reader.pdfDoc.numPages || 1;
+  ensureReaderResizeObserver();
   await renderPdfPage(true);
   startReaderThreadsPoller();
 }
@@ -962,12 +1047,27 @@ async function syncReaderAfterFileRefresh() {
   if (selected.id !== state.reader.fileId) await openPdfReader(selected.id);
   renderReaderGeneralComments();
 }
-function selectionBelongsToPdf(range) {
-  if (!range) return false;
-  const node = range.commonAncestorContainer;
+function nodeBelongsToPdfLayer(node) {
+  if (!node || !pdfTextLayer) return false;
   if (node === pdfTextLayer) return true;
   if (node.nodeType === Node.TEXT_NODE) return pdfTextLayer.contains(node.parentNode);
   return pdfTextLayer.contains(node);
+}
+function maybeShowSelectionWarning(code, message) {
+  const now = Date.now();
+  if (state.reader.selectionWarnCode === code && now - state.reader.selectionWarnAt < 1200) return;
+  state.reader.selectionWarnCode = code;
+  state.reader.selectionWarnAt = now;
+  showMessage(message, "info");
+}
+function schedulePdfSelectionCapture(trigger = "selectionchange") {
+  if (!state.reader.open || !state.reader.hasTextLayer) return;
+  if (state.reader.selectionCaptureTimer) clearTimeout(state.reader.selectionCaptureTimer);
+  const waitMs = trigger === "pointerup" ? READER_SELECTION_DEBOUNCE_MS : READER_SELECTION_DEBOUNCE_MS + 20;
+  state.reader.selectionCaptureTimer = setTimeout(() => {
+    state.reader.selectionCaptureTimer = null;
+    capturePdfSelection(trigger);
+  }, waitMs);
 }
 function clearWindowSelection() { const sel = window.getSelection(); if (sel) sel.removeAllRanges(); }
 
@@ -984,10 +1084,18 @@ function buildAnchorFromSelection(text) {
   return { page_number: state.reader.pageNumber, quote_text: text, quote_prefix: full.slice(Math.max(0, idx - 30), idx), quote_suffix: full.slice(idx + text.length, idx + text.length + 30), quote_start: idx, quote_end: idx + text.length };
 }
 
-function openSelectionComposer(anchor) {
+function openSelectionComposer(anchor, focusComposer = false) {
+  setReaderTab("line");
   state.reader.selectedAnchor = anchor;
   lineSelectionQuote.textContent = normalizeWhitespace(anchor.quote_text) ? `引用：${normalizeWhitespace(anchor.quote_text)}` : `第 ${anchor.page_number} 页（页级评论）`;
   lineSelectionComposer.hidden = false;
+  if (focusComposer) {
+    try {
+      lineSelectionInput.focus({ preventScroll: true });
+    } catch (_error) {
+      lineSelectionInput.focus();
+    }
+  }
 }
 
 function cancelSelectionComposer(resetHighlight = true) {
@@ -997,15 +1105,36 @@ function cancelSelectionComposer(resetHighlight = true) {
   if (resetHighlight) highlightSelectedThread();
 }
 
-function capturePdfSelection() {
+function capturePdfSelection(trigger = "selectionchange") {
   if (!state.reader.open || !state.reader.hasTextLayer) return;
   const selection = window.getSelection();
   if (!selection || selection.rangeCount === 0 || selection.isCollapsed) return;
   const range = selection.getRangeAt(0);
-  if (!selectionBelongsToPdf(range)) return;
+  const startInside = nodeBelongsToPdfLayer(range.startContainer);
+  const endInside = nodeBelongsToPdfLayer(range.endContainer);
+  if (!startInside || !endInside) {
+    let mayCrossPage = startInside || endInside;
+    if (!mayCrossPage && selection.containsNode) {
+      try {
+        mayCrossPage = selection.containsNode(pdfTextLayer, true);
+      } catch (_error) {
+        mayCrossPage = false;
+      }
+    }
+    if (mayCrossPage && trigger === "pointerup") {
+      maybeShowSelectionWarning("cross-page", "请在单页内划线评论。");
+    }
+    return;
+  }
   const text = selection.toString();
-  if (!normalizeWhitespace(text)) return;
-  openSelectionComposer(buildAnchorFromSelection(text));
+  const normalized = normalizeWhitespace(text);
+  if (normalized.length < MIN_LINE_SELECTION_CHARS) {
+    if (trigger === "pointerup") {
+      maybeShowSelectionWarning("too-short", `至少选择 ${MIN_LINE_SELECTION_CHARS} 个字符后再评论。`);
+    }
+    return;
+  }
+  openSelectionComposer(buildAnchorFromSelection(text), true);
   drawHighlight(range);
 }
 
@@ -1215,11 +1344,14 @@ pdfZoomSelect?.addEventListener("change", () => changeReaderZoom(pdfZoomSelect.v
 lineSelectionSubmitButton?.addEventListener("click", () => submitLineSelectionThread().catch((e) => { if (e.status === 401) handleAuthExpired(); else showMessage(e.message || "发布划线评论失败。"); }));
 lineSelectionCancelButton?.addEventListener("click", () => { cancelSelectionComposer(true); clearWindowSelection(); });
 pageLevelCommentButton?.addEventListener("click", () => {
-  openSelectionComposer({ page_number: state.reader.pageNumber, quote_text: "", quote_prefix: "", quote_suffix: "", quote_start: null, quote_end: null });
-  lineSelectionInput.focus();
+  openSelectionComposer({ page_number: state.reader.pageNumber, quote_text: "", quote_prefix: "", quote_suffix: "", quote_start: null, quote_end: null }, true);
 });
-pdfTextLayer?.addEventListener("mouseup", () => setTimeout(() => capturePdfSelection(), 0));
-pdfTextLayer?.addEventListener("keyup", () => setTimeout(() => capturePdfSelection(), 0));
+document.addEventListener("selectionchange", () => {
+  schedulePdfSelectionCapture("selectionchange");
+});
+window.addEventListener("pointerup", () => {
+  schedulePdfSelectionCapture("pointerup");
+});
 
 window.addEventListener("keydown", (event) => {
   if (event.key === "Escape") {
@@ -1241,7 +1373,7 @@ function changeReaderZoom(value) {
   if (!state.reader.pdfDoc) return;
   const zoom = Number.parseFloat(String(value));
   if (!Number.isFinite(zoom) || zoom <= 0) return;
-  state.reader.zoom = zoom;
+  state.reader.userZoomFactor = zoom;
   renderPdfPage(false).catch((e) => showMessage(e.message || "缩放失败。"));
 }
 
