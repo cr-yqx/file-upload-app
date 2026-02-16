@@ -1549,6 +1549,7 @@ def generate_ai_discussion_summary(base_payload: Dict[str, Any]) -> Dict[str, An
         "You are a meeting summarization assistant. Return strict JSON with keys: "
         "meeting_overview, by_commented_owner, cross_actions. "
         "Each item in by_commented_owner must include owner_nickname, files, claimable_actions."
+        "comment_details[].comment_content must be copied exactly from input, no paraphrase/translation/shortening. "
     )
     user_prompt = (
         "基于下面的会议讨论原始结构，输出更清晰的中文总结JSON，保持字段结构不变，"
