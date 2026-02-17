@@ -239,8 +239,9 @@ body {
 }
 
 .left-column {
-    position: static;
-    top: auto;
+    position: sticky;
+    top: var(--sticky-top);
+    align-self: start;
 }
 
 .left-column .column-scroll {
