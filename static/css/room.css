@@ -203,7 +203,7 @@ body {
 #workspace {
     display: grid;
     grid-template-columns: minmax(250px, 300px) minmax(0, 1fr) minmax(320px, 380px);
-    gap: 1rem;
+    gap: 0.66rem;
     align-items: start;
     position: relative;
     isolation: isolate;
@@ -218,12 +218,13 @@ body {
 
 .column-scroll {
     max-height: calc(100vh - (var(--sticky-top) * 2));
-    overflow: auto;
+    overflow-y: auto;
+    overflow-x: hidden;
     display: grid;
     gap: 0.8rem;
     align-content: start;
-    padding: 0.04rem 0.24rem 0.12rem;
-    scrollbar-gutter: stable both-edges;
+    width: 100%;
+    padding: 0.04rem 0.08rem 0.12rem;
 }
 
 .left-column,
