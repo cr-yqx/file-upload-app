@@ -250,14 +250,17 @@ function closeNicknameModal() { nicknameModal.hidden = true; syncBodyScrollLock(
 function renderSummary(file) {
   const wrapper = document.createElement("section");
   wrapper.className = "summary";
-  if (file.type !== "pdf") {
-    if (file.type === "doc" || file.type === "docx") {
-      wrapper.innerHTML = "<p>Word 文件本期不自动生成摘要，可通过全文评论与划线评论沉淀讨论。</p>";
+
+  const summarySupported = file.type === "pdf" || file.type === "docx";
+  if (!summarySupported) {
+    if (file.type === "doc") {
+      wrapper.innerHTML = "<p>`.doc` 暂不自动生成摘要，请转换为 `.docx` 后重试。</p>";
       return wrapper;
     }
     wrapper.innerHTML = "<p>图片文件无需摘要。</p>";
     return wrapper;
   }
+
   if (file.summary_status === "done" && file.summary_json) {
     const summary = file.summary_json;
     wrapper.innerHTML = `<h4>AI 摘要</h4><p>一句话：${summary.one_line_summary || ""}</p><h4>关键点</h4><ul>${(summary.key_points || []).map((p) => `<li>${p}</li>`).join("")}</ul><p>关键词：${(summary.keywords || []).join(" / ")}</p><h4>行动建议</h4><ul>${(summary.suggested_actions || []).map((p) => `<li>${p}</li>`).join("")}</ul>`;
