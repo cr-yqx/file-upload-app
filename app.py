@@ -3298,7 +3298,8 @@ def process_pdf_summary(summary_job_id: int) -> None:
                 if not os.path.exists(stored_path):
                     raise FileNotFoundError("Uploaded file is missing from storage.")
 
-                summary_file_type = get_file_type_by_name(file_record.original_name_full or file_record.original_name or file_record.stored_name)
+                summary_extension = get_extension(file_record.stored_name or "")
+                summary_file_type = get_file_type_from_extension(summary_extension)
                 if summary_file_type == "pdf":
                     extracted_text = extract_pdf_text(stored_path)
                 elif summary_file_type == "docx":

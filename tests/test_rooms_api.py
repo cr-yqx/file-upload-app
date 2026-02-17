@@ -226,6 +226,37 @@ def test_word_upload_and_word_filter(client):
     assert {item["type"] for item in word_files} == {"doc", "docx"}
 
 
+def test_docx_summary_execution_path(client, test_app, monkeypatch):
+    create_room(client, name="Docx Summary Room", slug="docx-summary-room", passcode="abcd1234")
+    set_profile(client, "docx-summary-room", "Wendy")
+
+    upload_response = upload_docx(client, slug="docx-summary-room", filename="summary.docx")
+    assert upload_response.status_code == 200
+    payload = upload_response.get_json()
+    job_id = payload["summary_job_id"]
+    assert job_id is not None
+
+    fake_summary = {
+        "one_line_summary": "docx summary ok",
+        "key_points": ["p1", "p2", "p3"],
+        "keywords": ["k1", "k2", "k3", "k4", "k5"],
+        "suggested_actions": ["a1", "a2", "a3"],
+    }
+    monkeypatch.setattr(app_module, "generate_ai_summary", lambda _text: fake_summary)
+    monkeypatch.setattr(app_module, "app", test_app)
+    test_app.config["SUMMARY_MIN_TEXT_CHARS"] = 1
+
+    app_module.process_pdf_summary(job_id)
+
+    with test_app.app_context():
+        summary_job = app_module.db.session.get(app_module.SummaryJob, job_id)
+        assert summary_job is not None
+        assert summary_job.status == "done"
+        assert summary_job.file is not None
+        assert summary_job.file.summary_status == "done"
+        assert summary_job.file.summary_json["one_line_summary"] == "docx summary ok"
+
+
 def test_upload_preserves_original_filename(client, test_app):
     create_room(client, name="Filename Room", slug="filename-room", passcode="abcd1234")
     set_profile(client, "filename-room", "NameTester")
