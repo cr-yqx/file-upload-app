@@ -525,11 +525,23 @@ body {
 }
 
 .comment-list {
-    max-height: 240px;
+    max-height: 360px;
     overflow: auto;
     display: grid;
     gap: 0.45rem;
     margin-top: 0.55rem;
+}
+
+.comment-section {
+    display: grid;
+    gap: 0.42rem;
+}
+
+.comment-section-title {
+    margin: 0;
+    font-size: 0.86rem;
+    font-weight: 700;
+    color: #234b68;
 }
 
 .comment-item {
@@ -550,6 +562,25 @@ body {
     margin: 0;
     font-size: 0.9rem;
     line-height: 1.56;
+}
+
+.line-thread-item-inline {
+    border-color: rgba(182, 129, 40, 0.25);
+    background: rgba(255, 251, 241, 0.9);
+}
+
+.line-thread-inline-quote {
+    margin: 0 0 0.22rem;
+    padding-left: 0.46rem;
+    border-left: 3px solid rgba(182, 129, 40, 0.52);
+    color: #2c4d67;
+}
+
+.line-thread-inline-messages {
+    margin: 0;
+    padding-left: 1rem;
+    display: grid;
+    gap: 0.18rem;
 }
 
 .file-picker {

@@ -99,6 +99,7 @@ const state = {
   collaborators: [],
   selectedFileId: null,
   comments: [],
+  sidebarLineThreads: [],
   commentsAfterId: 0,
   newCommentCount: 0,
   discussion: { status: "idle", ended_at: null, summary_version: 0, is_owner: false },
@@ -142,6 +143,7 @@ const READER_SELECTION_DEBOUNCE_MS = 80;
 const MIN_LINE_SELECTION_CHARS = 2;
 const DOCX_SUPPORTED_TYPES = new Set(["docx"]);
 const READER_LINE_SUPPORTED_TYPES = new Set(["pdf", "docx"]);
+const SIDEBAR_LINE_SUPPORTED_TYPES = new Set(["pdf", "docx", "doc"]);
 
 function setAuthorized(next) { state.isAuthorized = next; authSection.hidden = next; workspace.hidden = !next; }
 function setLoading(v) { loading.hidden = !v; }
@@ -480,22 +482,96 @@ function renderComments() {
     return;
   }
   const selected = getSelectedFile();
-  commentFileMeta.textContent = selected ? `当前文件：${selected.original_name || selected.filename}` : "当前文件不可用";
+  const lineThreads = Array.isArray(state.sidebarLineThreads) ? state.sidebarLineThreads : [];
+  const fullComments = Array.isArray(state.comments) ? state.comments : [];
+  commentFileMeta.textContent = selected
+    ? `当前文件：${selected.original_name || selected.filename}（划线 ${lineThreads.length} / 全文 ${fullComments.length}）`
+    : "当前文件不可用";
   commentInput.disabled = !state.viewer.has_profile;
   submitCommentButton.disabled = !state.viewer.has_profile;
 
-  if (!state.comments.length) {
-    commentList.innerHTML = '<p class="tips">暂无评论，写下第一条观点吧。</p>';
-    renderReaderGeneralComments();
-    return;
-  }
+  const lineSection = document.createElement("section");
+  lineSection.className = "comment-section";
+  const lineTitle = document.createElement("h4");
+  lineTitle.className = "comment-section-title";
+  lineTitle.textContent = "划线评论";
+  lineSection.appendChild(lineTitle);
+  if (!selected || !SIDEBAR_LINE_SUPPORTED_TYPES.has(selected.type)) {
+    const tip = document.createElement("p");
+    tip.className = "tips";
+    tip.textContent = "当前文件类型不支持划线评论。";
+    lineSection.appendChild(tip);
+  } else if (!lineThreads.length) {
+    const tip = document.createElement("p");
+    tip.className = "tips";
+    tip.textContent = "暂无划线评论。";
+    lineSection.appendChild(tip);
+  } else {
+    lineThreads.forEach((thread) => {
+      const item = document.createElement("article");
+      item.className = "comment-item line-thread-item-inline";
 
-  state.comments.forEach((comment) => {
-    const item = document.createElement("article");
-    item.className = "comment-item";
-    item.innerHTML = `<div class="comment-item-head"><strong>${comment.nickname}</strong><span>${formatTimestamp(comment.created_at)}</span></div><p>${comment.content}</p>`;
-    commentList.appendChild(item);
-  });
+      const scope = thread.source_type === "docx"
+        ? `段落 ${thread.segment_key || "-"}`
+        : `第 ${thread.page_number || 1} 页`;
+      const threadHead = document.createElement("div");
+      threadHead.className = "comment-item-head";
+      const title = document.createElement("strong");
+      title.textContent = scope;
+      const time = document.createElement("span");
+      time.textContent = formatTimestamp(thread.updated_at || thread.created_at || "");
+      threadHead.appendChild(title);
+      threadHead.appendChild(time);
+      item.appendChild(threadHead);
+
+      const quote = document.createElement("p");
+      quote.className = "line-thread-inline-quote";
+      quote.textContent = normalizeWhitespace(thread.quote_text || "") || "页级评论（无引用）";
+      item.appendChild(quote);
+
+      const messages = Array.isArray(thread.messages) ? thread.messages : [];
+      if (!messages.length) {
+        const empty = document.createElement("p");
+        empty.className = "tips";
+        empty.textContent = "该划线暂无评论消息。";
+        item.appendChild(empty);
+      } else {
+        const messageList = document.createElement("ul");
+        messageList.className = "line-thread-inline-messages";
+        messages.forEach((msg) => {
+          const li = document.createElement("li");
+          const who = String(msg.nickname || "匿名");
+          const content = String(msg.content || "");
+          li.textContent = `${who}：${content}`;
+          messageList.appendChild(li);
+        });
+        item.appendChild(messageList);
+      }
+      lineSection.appendChild(item);
+    });
+  }
+  commentList.appendChild(lineSection);
+
+  const fullSection = document.createElement("section");
+  fullSection.className = "comment-section";
+  const fullTitle = document.createElement("h4");
+  fullTitle.className = "comment-section-title";
+  fullTitle.textContent = "全文评论";
+  fullSection.appendChild(fullTitle);
+  if (!fullComments.length) {
+    const tip = document.createElement("p");
+    tip.className = "tips";
+    tip.textContent = "暂无全文评论，写下第一条观点吧。";
+    fullSection.appendChild(tip);
+  } else {
+    fullComments.forEach((comment) => {
+      const item = document.createElement("article");
+      item.className = "comment-item";
+      item.innerHTML = `<div class="comment-item-head"><strong>${comment.nickname}</strong><span>${formatTimestamp(comment.created_at)}</span></div><p>${comment.content}</p>`;
+      fullSection.appendChild(item);
+    });
+  }
+  commentList.appendChild(fullSection);
   renderReaderGeneralComments();
 }
 
@@ -683,14 +759,31 @@ async function loadFiles(silent = false) {
 }
 
 async function loadComments(reset = false) {
-  if (!state.selectedFileId) { state.comments = []; state.commentsAfterId = 0; renderComments(); return; }
+  if (!state.selectedFileId) {
+    state.comments = [];
+    state.sidebarLineThreads = [];
+    state.commentsAfterId = 0;
+    renderComments();
+    return;
+  }
   const query = reset ? "" : `?after_id=${state.commentsAfterId || 0}`;
   const data = await requestJson(`/api/rooms/${roomSlug}/files/${state.selectedFileId}/comments${query}`);
   const list = data.comments || [];
   if (reset) { state.comments = list; state.newCommentCount = 0; newCommentBadge.hidden = true; }
   else if (list.length > 0) { state.comments.push(...list); state.newCommentCount += list.length; newCommentBadge.hidden = false; newCommentBadge.textContent = `有新评论 +${state.newCommentCount}`; }
   state.commentsAfterId = data.cursor?.after_id || state.commentsAfterId;
+  await loadSidebarLineThreads();
   renderComments();
+}
+
+async function loadSidebarLineThreads() {
+  const selected = getSelectedFile();
+  if (!state.selectedFileId || !selected || !SIDEBAR_LINE_SUPPORTED_TYPES.has(selected.type)) {
+    state.sidebarLineThreads = [];
+    return;
+  }
+  const data = await requestJson(`/api/rooms/${roomSlug}/files/${state.selectedFileId}/line-threads`);
+  state.sidebarLineThreads = data.threads || [];
 }
 
 async function loadDiscussionSummary(force = false) {
