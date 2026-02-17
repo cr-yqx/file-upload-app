@@ -202,7 +202,7 @@ body {
 
 #workspace {
     display: grid;
-    grid-template-columns: minmax(220px, 260px) minmax(0, 1fr) minmax(300px, 360px);
+    grid-template-columns: minmax(240px, 280px) minmax(0, 1fr) minmax(300px, 360px);
     gap: 0.5rem;
     align-items: start;
     position: relative;
@@ -238,6 +238,17 @@ body {
     z-index: 4;
 }
 
+.left-column {
+    position: static;
+    top: auto;
+}
+
+.left-column .column-scroll {
+    max-height: none;
+    overflow: visible;
+    padding: 0;
+}
+
 .middle-column {
     display: grid;
     gap: 0.85rem;
@@ -245,15 +256,20 @@ body {
     z-index: 1;
     overflow-x: clip;
     contain: paint;
+    box-shadow: inset 1px 0 0 rgba(16, 35, 56, 0.08);
 }
 
 .middle-column .card {
-    box-shadow: 0 12px 24px rgba(16, 35, 56, 0.09);
+    box-shadow: 0 9px 16px rgba(16, 35, 56, 0.08);
 }
 
 .left-column .card,
 .right-column .card {
     background: rgba(255, 255, 255, 0.82);
+}
+
+.left-column .card {
+    width: 100%;
 }
 
 .card {
@@ -276,6 +292,10 @@ body {
     color: var(--muted);
     font-size: 0.88rem;
     line-height: 1.58;
+}
+
+.left-column .tips {
+    overflow-wrap: anywhere;
 }
 
 .nickname-value {
@@ -677,6 +697,7 @@ body {
 .file-picker-name {
     min-height: 34px;
     flex: 1;
+    min-width: 0;
     display: inline-flex;
     align-items: center;
     color: var(--muted);
@@ -1123,7 +1144,7 @@ button,
 
 @media (max-width: 1220px) {
     #workspace {
-        grid-template-columns: minmax(210px, 240px) minmax(0, 1fr);
+        grid-template-columns: minmax(220px, 250px) minmax(0, 1fr);
     }
 
     .right-column {
