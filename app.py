@@ -936,9 +936,9 @@ def register_routes(app: Flask) -> None:
         if file_type == "docx" and page_number <= 0:
             page_number = 1
 
-        quote_text = str(data.get("quote_text") or "").strip()
-        quote_prefix = str(data.get("quote_prefix") or "").strip()[:120]
-        quote_suffix = str(data.get("quote_suffix") or "").strip()[:120]
+        quote_text = sanitize_line_quote_fragment(data.get("quote_text"))
+        quote_prefix = sanitize_line_quote_fragment(data.get("quote_prefix"), max_length=120)
+        quote_suffix = sanitize_line_quote_fragment(data.get("quote_suffix"), max_length=120)
 
         quote_start = data.get("quote_start")
         quote_end = data.get("quote_end")
@@ -1463,6 +1463,16 @@ def sanitize_original_filename(raw_filename: str, extension: str) -> str:
     return f"file-{uuid.uuid4().hex}{suffix}"
 
 
+def sanitize_line_quote_fragment(raw_text: Any, max_length: Optional[int] = None) -> str:
+    text = str(raw_text or "")
+    text = CONTROL_CHAR_PATTERN.sub("", text)
+    text = text.replace("\ufffd", "").replace("\ufeff", "")
+    text = re.sub(r"\s+", " ", text).strip()
+    if max_length is not None:
+        text = text[:max_length]
+    return text
+
+
 def get_file_original_name(file_record: FileRecord) -> str:
     candidate = (file_record.original_name_full or file_record.original_name or "").strip()
     if candidate:
@@ -1483,14 +1493,17 @@ def compute_line_anchor_hash(
     segment_start: Optional[int] = None,
     segment_end: Optional[int] = None,
 ) -> str:
+    normalized_quote_text = sanitize_line_quote_fragment(quote_text)
+    normalized_quote_prefix = sanitize_line_quote_fragment(quote_prefix)
+    normalized_quote_suffix = sanitize_line_quote_fragment(quote_suffix)
     payload = "|".join(
         [
             (source_type or "pdf").strip().lower(),
             (anchor_scope or "text").strip().lower(),
             str(max(page_number, 1)),
-            (quote_text or "").strip(),
-            (quote_prefix or "").strip(),
-            (quote_suffix or "").strip(),
+            normalized_quote_text,
+            normalized_quote_prefix,
+            normalized_quote_suffix,
             str(-1 if quote_start is None else int(quote_start)),
             str(-1 if quote_end is None else int(quote_end)),
             (segment_key or "").strip(),
@@ -1742,9 +1755,9 @@ def serialize_line_thread(thread: PDFLineThread, viewer_token: Optional[str]) ->
         "segment_key": thread.segment_key,
         "segment_start": thread.segment_start,
         "segment_end": thread.segment_end,
-        "quote_text": thread.quote_text or "",
-        "quote_prefix": thread.quote_prefix or "",
-        "quote_suffix": thread.quote_suffix or "",
+        "quote_text": sanitize_line_quote_fragment(thread.quote_text),
+        "quote_prefix": sanitize_line_quote_fragment(thread.quote_prefix, max_length=120),
+        "quote_suffix": sanitize_line_quote_fragment(thread.quote_suffix, max_length=120),
         "quote_start": thread.quote_start,
         "quote_end": thread.quote_end,
         "anchor_hash": thread.anchor_hash,
@@ -2119,9 +2132,9 @@ def build_discussion_summary_json(room: Room) -> Dict[str, Any]:
             "segment_key": thread.segment_key,
             "segment_start": thread.segment_start,
             "segment_end": thread.segment_end,
-            "quote_text": thread.quote_text or "",
-            "quote_prefix": thread.quote_prefix or "",
-            "quote_suffix": thread.quote_suffix or "",
+            "quote_text": sanitize_line_quote_fragment(thread.quote_text),
+            "quote_prefix": sanitize_line_quote_fragment(thread.quote_prefix, max_length=120),
+            "quote_suffix": sanitize_line_quote_fragment(thread.quote_suffix, max_length=120),
             "quote_start": thread.quote_start,
             "quote_end": thread.quote_end,
             "comments": line_messages_by_thread.get(thread.id, []),
@@ -2229,7 +2242,10 @@ def normalize_discussion_text_list(value: Any, max_items: int = 12) -> List[str]
 
 
 def normalize_discussion_display_text(value: Any) -> str:
-    return re.sub(r"\s+", " ", str(value or "")).strip()
+    text = str(value or "")
+    text = CONTROL_CHAR_PATTERN.sub("", text)
+    text = text.replace("\ufffd", "").replace("\ufeff", "")
+    return re.sub(r"\s+", " ", text).strip()
 
 
 def normalize_discussion_actor_key(value: Any) -> str:

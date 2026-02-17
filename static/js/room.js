@@ -216,7 +216,7 @@ async function ensureFileReadable(fileUrl) {
   }
 }
 
-function normalizeWhitespace(v) { return String(v || "").replace(/\s+/g, " ").trim(); }
+function normalizeWhitespace(v) { return String(v || "").replace(/\uFFFD/g, "").replace(/\s+/g, " ").trim(); }
 function formatTimestamp(v) { return (v || "").replace("T", " ").replace("Z", ""); }
 function getSelectedFile() { return state.files.find((x) => x.id === state.selectedFileId) || null; }
 function getFileById(id) { return state.files.find((x) => x.id === id) || null; }

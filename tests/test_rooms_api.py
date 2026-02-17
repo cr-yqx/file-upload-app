@@ -432,7 +432,7 @@ def test_pdf_line_thread_crud_and_author_permissions(client, test_app):
         f"/api/rooms/line-room/files/{file_id}/line-threads",
         json={
             "page_number": 1,
-            "quote_text": "Important paragraph",
+            "quote_text": "Important\ufffd paragraph",
             "quote_prefix": "prefix",
             "quote_suffix": "suffix",
             "quote_start": 10,
@@ -446,12 +446,15 @@ def test_pdf_line_thread_crud_and_author_permissions(client, test_app):
     first_comment_id = thread_payload["comment"]["id"]
     assert thread_payload["thread"]["message_count"] == 1
     assert thread_payload["thread"]["source_type"] == "pdf"
+    assert "\ufffd" not in thread_payload["thread"]["quote_text"]
+    assert thread_payload["thread"]["quote_text"] == "Important paragraph"
 
     listed = client.get(f"/api/rooms/line-room/files/{file_id}/line-threads?page=1")
     assert listed.status_code == 200
     listed_payload = listed.get_json()
     assert len(listed_payload["threads"]) == 1
     assert listed_payload["threads"][0]["id"] == thread_id
+    assert "\ufffd" not in listed_payload["threads"][0]["quote_text"]
 
     reply = client.post(
         f"/api/rooms/line-room/line-threads/{thread_id}/messages",
@@ -639,7 +642,7 @@ def test_discussion_summary_endpoint_normalizes_legacy_action_board_and_dedupes_
                                     "thread_id": 1,
                                     "source_type": "pdf",
                                     "page_number": 1,
-                                    "quote_text": "legacy quote",
+                                    "quote_text": "legacy\ufffd quote",
                                     "comments": [
                                         {
                                             "commenter_nickname": "B",
@@ -692,6 +695,8 @@ def test_discussion_summary_endpoint_normalizes_legacy_action_board_and_dedupes_
     assert owner_group["action_board"]["follow_up"] == owner_group["follow_up_details"]
     assert any("full legacy content" in item for item in owner_group["processing_details"])
     assert any("line legacy content" in item for item in owner_group["processing_details"])
+    assert all("\ufffd" not in item for item in owner_group["processing_details"])
+    assert all("\ufffd" not in item for item in owner_group["follow_up_details"])
     assert file_item["comment_details"] == file_item["full_comments"]
     assert file_item["line_feedback"] == file_item["line_comments"]
     assert owner_group["claimable_actions"] == ["额外待确认：会后统一术语口径"]
