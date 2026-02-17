@@ -686,6 +686,12 @@ def test_discussion_summary_endpoint_normalizes_legacy_action_board_and_dedupes_
 
     assert file_item["action_board"]["processing"]
     assert file_item["action_board"]["follow_up"]
+    assert owner_group["processing_details"]
+    assert owner_group["follow_up_details"]
+    assert owner_group["action_board"]["processing"] == owner_group["processing_details"]
+    assert owner_group["action_board"]["follow_up"] == owner_group["follow_up_details"]
+    assert any("full legacy content" in item for item in owner_group["processing_details"])
+    assert any("line legacy content" in item for item in owner_group["processing_details"])
     assert file_item["comment_details"] == file_item["full_comments"]
     assert file_item["line_feedback"] == file_item["line_comments"]
     assert owner_group["claimable_actions"] == ["额外待确认：会后统一术语口径"]
@@ -745,7 +751,77 @@ def test_discussion_summary_endpoint_removes_fully_mapped_claimable_actions(clie
     payload = summary_response.get_json()
     normalized = payload["summary"]["summary_json"]
     owner_group = normalized["by_commented_owner"][0]
+    assert owner_group["processing_details"]
+    assert owner_group["follow_up_details"]
     assert owner_group["claimable_actions"] == []
+
+
+def test_discussion_summary_follow_up_only_contains_owner_comments_to_others_and_not_truncated(client, test_app):
+    create_room(client, name="Flow Room", slug="flow-room", passcode="abcd1234")
+    set_profile(client, "flow-room", "Alice")
+    alice_upload = upload_pdf(client, slug="flow-room", filename="alice.pdf")
+    assert alice_upload.status_code == 200
+    alice_file_id = alice_upload.get_json()["file_id"]
+
+    with test_app.test_client() as bob_client:
+        auth = bob_client.post("/api/rooms/flow-room/auth", json={"passcode": "abcd1234"})
+        assert auth.status_code == 200
+        set_profile_response = set_profile(bob_client, "flow-room", "Bob")
+        assert set_profile_response.status_code == 200
+        bob_upload = upload_pdf(bob_client, slug="flow-room", filename="bob.pdf")
+        assert bob_upload.status_code == 200
+        bob_file_id = bob_upload.get_json()["file_id"]
+
+        bob_comment = bob_client.post(
+            f"/api/rooms/flow-room/files/{alice_file_id}/comments",
+            json={"content": "Bob对Alice的完整点评内容，不应该出现在Alice的跟进区。"},
+        )
+        assert bob_comment.status_code == 200
+
+    long_quote = "这是Alice针对Bob文件的完整划线引用文本，长度足够用于验证系统不会再做截断处理。"
+    long_line_comment = "Alice在线上点评Bob文件，这条划线评论必须完整保留，不允许省略号。"
+    long_full_comment = "Alice给Bob的全文评论也必须完整保留，并且只能出现在Alice的跟进区域。"
+
+    alice_line_thread = client.post(
+        f"/api/rooms/flow-room/files/{bob_file_id}/line-threads",
+        json={
+            "page_number": 1,
+            "quote_text": long_quote,
+            "quote_prefix": "",
+            "quote_suffix": "",
+            "quote_start": 10,
+            "quote_end": 10 + len(long_quote),
+            "content": long_line_comment,
+        },
+    )
+    assert alice_line_thread.status_code == 200
+
+    alice_full_comment = client.post(
+        f"/api/rooms/flow-room/files/{bob_file_id}/comments",
+        json={"content": long_full_comment},
+    )
+    assert alice_full_comment.status_code == 200
+
+    with test_app.app_context():
+        room = app_module.Room.query.filter_by(slug="flow-room").first()
+        assert room is not None
+        summary_json = app_module.build_discussion_summary_json(room)
+        normalized = app_module.normalize_discussion_summary_payload(summary_json)
+
+    owner_groups = normalized.get("by_commented_owner") or []
+    owner_map = {group.get("owner_nickname"): group for group in owner_groups}
+    assert "Alice" in owner_map
+    assert "Bob" in owner_map
+
+    alice_group = owner_map["Alice"]
+    bob_group = owner_map["Bob"]
+
+    assert any("Bob对Alice的完整点评内容" in item for item in alice_group.get("processing_details", []))
+    assert any(long_full_comment in item for item in alice_group.get("follow_up_details", []))
+    assert any(long_line_comment in item for item in alice_group.get("follow_up_details", []))
+    assert any(long_quote in item for item in alice_group.get("follow_up_details", []))
+    assert all("Bob对Alice的完整点评内容" not in item for item in alice_group.get("follow_up_details", []))
+    assert any("Alice给Bob的全文评论" in item for item in bob_group.get("processing_details", []))
 
 
 def test_legacy_endpoints_still_work(client):

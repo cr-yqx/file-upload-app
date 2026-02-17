@@ -555,81 +555,27 @@ function dedupeSummaryActionList(items, maxItems = 12) {
   return result;
 }
 
-function deriveFileActionBoard(fileItem, groupActions) {
-  const fileName = String(fileItem.file_name || "").trim();
-  const board = fileItem.action_board && typeof fileItem.action_board === "object" ? fileItem.action_board : {};
-  let processing = dedupeSummaryActionList(board.processing, 6);
-  let followUp = dedupeSummaryActionList(board.follow_up, 6);
-  const consumed = new Set();
-  const normalizedProcessingSet = new Set(processing.map((item) => normalizeSummaryActionKey(item)));
-  const normalizedFollowUpSet = new Set(followUp.map((item) => normalizeSummaryActionKey(item)));
-  const fullComments = Array.isArray(fileItem.full_comments) ? fileItem.full_comments : (Array.isArray(fileItem.comment_details) ? fileItem.comment_details : []);
-  const lineComments = Array.isArray(fileItem.line_comments) ? fileItem.line_comments : (Array.isArray(fileItem.line_feedback) ? fileItem.line_feedback : []);
+function deriveOwnerActionBoard(group) {
+  const ownerBoard = group.action_board && typeof group.action_board === "object" ? group.action_board : {};
+  const groupProcessing = Array.isArray(group.processing_details) ? group.processing_details : ownerBoard.processing;
+  const groupFollowUp = Array.isArray(group.follow_up_details) ? group.follow_up_details : ownerBoard.follow_up;
 
-  const actionMatchesFile = (actionText) => {
-    if (!fileName) return false;
-    return actionText.includes(`《${fileName}》`) || actionText.includes(fileName);
-  };
+  let processing = dedupeSummaryActionList(groupProcessing, 500);
+  let followUp = dedupeSummaryActionList(groupFollowUp, 500);
 
-  if ((!processing.length || !followUp.length) && Array.isArray(groupActions)) {
-    groupActions.forEach((rawAction) => {
-      const action = String(rawAction || "").trim();
-      const key = normalizeSummaryActionKey(action);
-      if (!key || !actionMatchesFile(action)) return;
-      if (action.startsWith("处理")) {
-        if (!normalizedProcessingSet.has(key)) {
-          processing.push(action);
-          normalizedProcessingSet.add(key);
-        }
-        consumed.add(key);
-      } else if (action.startsWith("跟进")) {
-        if (!normalizedFollowUpSet.has(key)) {
-          followUp.push(action);
-          normalizedFollowUpSet.add(key);
-        }
-        consumed.add(key);
-      }
+  if ((!processing.length || !followUp.length) && Array.isArray(group.files)) {
+    const fileLevelProcessing = [];
+    const fileLevelFollowUp = [];
+    group.files.forEach((fileItem) => {
+      const fileBoard = fileItem && typeof fileItem.action_board === "object" ? fileItem.action_board : {};
+      if (Array.isArray(fileBoard.processing)) fileLevelProcessing.push(...fileBoard.processing);
+      if (Array.isArray(fileBoard.follow_up)) fileLevelFollowUp.push(...fileBoard.follow_up);
     });
+    if (!processing.length) processing = dedupeSummaryActionList(fileLevelProcessing, 500);
+    if (!followUp.length) followUp = dedupeSummaryActionList(fileLevelFollowUp, 500);
   }
 
-  if (!processing.length) {
-    lineComments.slice(0, 3).forEach((item) => {
-      const quote = normalizeWhitespace(item.quote_text || "");
-      if (!quote) return;
-      const scope = item.source_type === "docx" ? `段落 ${item.segment_key || "-"}` : `第 ${item.page_number || 1} 页`;
-      const action = `处理《${fileName || "该文件"}》${scope}引用：${quote.slice(0, 42)}`;
-      const key = normalizeSummaryActionKey(action);
-      if (!normalizedProcessingSet.has(key)) {
-        processing.push(action);
-        normalizedProcessingSet.add(key);
-      }
-    });
-  }
-
-  if (!followUp.length) {
-    fullComments.slice(0, 3).forEach((item) => {
-      const action = `跟进《${fileName || "该文件"}》全文评论：${String(item.comment_content || "").slice(0, 42)}`;
-      const key = normalizeSummaryActionKey(action);
-      if (!normalizedFollowUpSet.has(key)) {
-        followUp.push(action);
-        normalizedFollowUpSet.add(key);
-      }
-    });
-  }
-
-  if (!processing.length) {
-    processing = [`处理《${fileName || "该文件"}》：补充结构化结论与负责人。`];
-  }
-  if (!followUp.length) {
-    followUp = [`跟进《${fileName || "该文件"}》：暂无全文评论，建议会后补充。`];
-  }
-
-  processing = dedupeSummaryActionList(processing, 4);
-  followUp = dedupeSummaryActionList(followUp, 4);
-  processing.forEach((item) => consumed.add(normalizeSummaryActionKey(item)));
-  followUp.forEach((item) => consumed.add(normalizeSummaryActionKey(item)));
-
-  return { processing, followUp, consumed };
+  return { processing, followUp };
 }
 
 function renderDiscussionSummary() {
@@ -647,106 +593,44 @@ function renderDiscussionSummary() {
   discussionSummaryContainer.innerHTML = "";
   const payload = state.discussionSummary?.summary_json;
   if (!payload?.by_commented_owner?.length) {
-    discussionSummaryContainer.innerHTML = '<p class="summary-placeholder">讨论结束后，这里会按“协作者”分组展示总结。</p>';
+    discussionSummaryContainer.innerHTML = '<p class="summary-placeholder">讨论结束后，这里会按协作者展示“处理/跟进”总结。</p>';
     return;
   }
 
   payload.by_commented_owner.forEach((group) => {
-    const rawGroupActions = Array.isArray(group.claimable_actions) ? group.claimable_actions : [];
     const card = document.createElement("article");
     card.className = "summary-group";
     const ownerTitle = document.createElement("h4");
     ownerTitle.textContent = `${group.owner_nickname || "未命名上传者"}`;
     card.appendChild(ownerTitle);
 
-    if (group.owner_summary) {
-      const ownerNote = document.createElement("p");
-      ownerNote.className = "summary-owner-note";
-      ownerNote.textContent = String(group.owner_summary);
-      card.appendChild(ownerNote);
-    }
+    const actionBoardResult = deriveOwnerActionBoard(group);
+    const board = document.createElement("section");
+    board.className = "action-board";
+    const processing = actionBoardResult.processing || [];
+    const followUp = actionBoardResult.followUp || [];
 
-    (group.files || []).forEach((fileItem) => {
-      const fileCard = document.createElement("section");
-      fileCard.className = "summary-file-card";
+    const processingCol = document.createElement("section");
+    processingCol.className = "action-row processing-row";
+    const processingTitle = document.createElement("h5");
+    processingTitle.textContent = "处理";
+    processingCol.appendChild(processingTitle);
+    processingCol.appendChild(buildSummaryList(processing, (v) => String(v || ""), "暂无处理项。"));
 
-      const fileTitle = document.createElement("p");
-      fileTitle.className = "summary-file-title";
-      fileTitle.textContent = `文件：${fileItem.file_name || "-"}`;
-      fileCard.appendChild(fileTitle);
+    const boardDivider = document.createElement("div");
+    boardDivider.className = "summary-divider";
 
-      const fullComments = fileItem.full_comments || fileItem.comment_details || [];
-      const fullSection = document.createElement("section");
-      fullSection.className = "summary-section";
-      const fullTitle = document.createElement("h5");
-      fullTitle.textContent = "全文评论";
-      fullSection.appendChild(fullTitle);
-      fullSection.appendChild(
-        buildSummaryList(
-          fullComments,
-          (detail) => `${detail.commenter_nickname || "匿名"}：${detail.comment_content || ""}`,
-          "暂无全文评论。"
-        )
-      );
-      fileCard.appendChild(fullSection);
+    const followCol = document.createElement("section");
+    followCol.className = "action-row followup-row";
+    const followTitle = document.createElement("h5");
+    followTitle.textContent = "跟进";
+    followCol.appendChild(followTitle);
+    followCol.appendChild(buildSummaryList(followUp, (v) => String(v || ""), "暂无跟进项。"));
 
-      const lineComments = fileItem.line_comments || fileItem.line_feedback || [];
-      const lineSection = document.createElement("section");
-      lineSection.className = "summary-section";
-      const lineTitle = document.createElement("h5");
-      lineTitle.textContent = "划线评论";
-      lineSection.appendChild(lineTitle);
-      lineSection.appendChild(
-        buildSummaryList(
-          lineComments,
-          (fb) => {
-            const quote = normalizeWhitespace(fb.quote_text || "");
-            const scope = fb.source_type === "docx" ? `段落 ${fb.segment_key || "-"}` : `第 ${fb.page_number || 1} 页`;
-            const messages = (fb.comments || [])
-              .map((msg) => `${msg.commenter_nickname || "匿名"}：${msg.comment_content || ""}`)
-              .join("；");
-            if (quote) return `${scope} 引用「${quote}」${messages ? ` -> ${messages}` : ""}`;
-            return `${scope}（无引用）${messages ? ` -> ${messages}` : ""}`;
-          },
-          "暂无划线评论。"
-        )
-      );
-      fileCard.appendChild(lineSection);
-
-      const divider = document.createElement("div");
-      divider.className = "summary-divider";
-      fileCard.appendChild(divider);
-
-      const actionBoardResult = deriveFileActionBoard(fileItem, rawGroupActions);
-
-      const board = document.createElement("section");
-      board.className = "action-board";
-      const processing = actionBoardResult.processing || [];
-      const followUp = actionBoardResult.followUp || [];
-
-      const processingCol = document.createElement("section");
-      processingCol.className = "action-row processing-row";
-      const processingTitle = document.createElement("h5");
-      processingTitle.textContent = "处理";
-      processingCol.appendChild(processingTitle);
-      processingCol.appendChild(buildSummaryList(processing, (v) => String(v || ""), "暂无处理项。"));
-
-      const boardDivider = document.createElement("div");
-      boardDivider.className = "summary-divider";
-
-      const followCol = document.createElement("section");
-      followCol.className = "action-row followup-row";
-      const followTitle = document.createElement("h5");
-      followTitle.textContent = "跟进";
-      followCol.appendChild(followTitle);
-      followCol.appendChild(buildSummaryList(followUp, (v) => String(v || ""), "暂无跟进项。"));
-
-      board.appendChild(processingCol);
-      board.appendChild(boardDivider);
-      board.appendChild(followCol);
-      fileCard.appendChild(board);
-      card.appendChild(fileCard);
-    });
+    board.appendChild(processingCol);
+    board.appendChild(boardDivider);
+    board.appendChild(followCol);
+    card.appendChild(board);
     discussionSummaryContainer.appendChild(card);
   });
 }

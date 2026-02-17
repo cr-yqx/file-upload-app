@@ -1,4 +1,4 @@
-:root {
+Ôªø:root {
     --bg-0: #eaf0f5;
     --bg-1: #f8fbff;
     --text: #102338;
@@ -804,7 +804,7 @@ button,
 }
 
 #pdfCanvasContainer.loading::after {
-    content: "“≥√Ê‰÷»æ÷–...";
+    content: "È°µÈù¢Ê∏≤Êüì‰∏≠...";
     position: absolute;
     left: 50%;
     top: 50%;
@@ -1198,6 +1198,14 @@ button,
     border-radius: 8px;
     padding: 0.42rem 0.46rem;
     background: rgba(255, 253, 246, 0.92);
+    white-space: normal;
+    word-break: break-word;
+    overflow-wrap: anywhere;
+    line-height: 1.64;
+}
+
+.action-row li {
+    line-height: 1.64;
 }
 
 .action-board .summary-divider {
@@ -1266,4 +1274,5 @@ button,
         background: rgba(182, 129, 40, 0.3);
     }
 }
+
 
