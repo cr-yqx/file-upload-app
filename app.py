@@ -3113,7 +3113,6 @@ def normalize_summary_json(raw_json: Dict[str, Any]) -> Dict[str, Any]:
         "one_line_summary": one_line,
         "key_points": normalized_list("key_points", 3, "Key point"),
         "keywords": normalized_list("keywords", 5, "Keyword"),
-        "suggested_actions": normalized_list("suggested_actions", 3, "Action"),
     }
 
 
@@ -3187,17 +3186,10 @@ def fallback_summary_from_text(raw_content: str) -> Dict[str, Any]:
     if len(keywords) < 5:
         keywords.extend(["主题", "重点", "结论", "术语", "行动"][: 5 - len(keywords)])
 
-    suggested_actions = [
-        "先根据一句话摘要确认主题边界",
-        "按关键点整理 3 条可复述笔记",
-        "基于关键词制定下一步学习清单",
-    ]
-
     return {
         "one_line_summary": one_line,
         "key_points": key_points,
         "keywords": keywords,
-        "suggested_actions": suggested_actions,
     }
 
 
@@ -3213,11 +3205,11 @@ def generate_ai_summary(text: str) -> Dict[str, Any]:
 
     system_prompt = (
         "You summarize study materials. Always return strict JSON with keys: "
-        "one_line_summary, key_points, keywords, suggested_actions."
+        "one_line_summary, key_points, keywords."
     )
     user_prompt = (
         "Summarize the following study material in Chinese. "
-        "Return exactly 1 one_line_summary, 3 key_points, 5 keywords, and 3 suggested_actions. "
+        "Return exactly 1 one_line_summary, 3 key_points, and 5 keywords. "
         "Do not output markdown.\n\n"
         f"CONTENT:\n{text}"
     )

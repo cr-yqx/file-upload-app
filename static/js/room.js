@@ -263,7 +263,7 @@ function renderSummary(file) {
 
   if (file.summary_status === "done" && file.summary_json) {
     const summary = file.summary_json;
-    wrapper.innerHTML = `<h4>AI 摘要</h4><p>一句话：${summary.one_line_summary || ""}</p><h4>关键点</h4><ul>${(summary.key_points || []).map((p) => `<li>${p}</li>`).join("")}</ul><p>关键词：${(summary.keywords || []).join(" / ")}</p><h4>行动建议</h4><ul>${(summary.suggested_actions || []).map((p) => `<li>${p}</li>`).join("")}</ul>`;
+    wrapper.innerHTML = `<h4>AI 摘要</h4><p>一句话：${summary.one_line_summary || ""}</p><h4>关键点</h4><ul>${(summary.key_points || []).map((p) => `<li>${p}</li>`).join("")}</ul><p>关键词：${(summary.keywords || []).join(" / ")}</p>`;
     return wrapper;
   }
   if (file.summary_status === "failed") { wrapper.innerHTML = `<p>摘要生成失败：${file.summary_error || "未知错误"}</p>`; return wrapper; }

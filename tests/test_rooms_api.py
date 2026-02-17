@@ -240,7 +240,6 @@ def test_docx_summary_execution_path(client, test_app, monkeypatch):
         "one_line_summary": "docx summary ok",
         "key_points": ["p1", "p2", "p3"],
         "keywords": ["k1", "k2", "k3", "k4", "k5"],
-        "suggested_actions": ["a1", "a2", "a3"],
     }
     monkeypatch.setattr(app_module, "generate_ai_summary", lambda _text: fake_summary)
     monkeypatch.setattr(app_module, "app", test_app)
