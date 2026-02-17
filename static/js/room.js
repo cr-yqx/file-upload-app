@@ -220,6 +220,12 @@ function normalizeWhitespace(v) { return String(v || "").replace(/\uFFFD/g, "").
 function formatTimestamp(v) { return (v || "").replace("T", " ").replace("Z", ""); }
 function getSelectedFile() { return state.files.find((x) => x.id === state.selectedFileId) || null; }
 function getFileById(id) { return state.files.find((x) => x.id === id) || null; }
+function scrollToFileCard(fileId, behavior = "smooth") {
+  if (!fileId) return;
+  const card = fileList?.querySelector(`.file-card[data-file-id="${String(fileId)}"]`);
+  if (!card) return;
+  card.scrollIntoView({ behavior, block: "center", inline: "nearest" });
+}
 function summaryStatusLabel(status) { if (status === "pending") return "排队中"; if (status === "running") return "处理中"; if (status === "done") return "已完成"; if (status === "failed") return "失败"; return "无需摘要"; }
 function fileTypeLabel(fileType) {
   if (fileType === "pdf") return "PDF";
@@ -293,6 +299,7 @@ function updateViewerSection() {
 function createFileCard(file) {
   const card = document.createElement("article");
   card.className = "file-card";
+  card.dataset.fileId = String(file.id);
   if (state.selectedFileId === file.id) card.classList.add("selected");
 
   card.innerHTML = `
@@ -820,6 +827,7 @@ function selectFile(fileId) {
   state.newCommentCount = 0;
   newCommentBadge.hidden = true;
   renderFileList();
+  if (fileId) requestAnimationFrame(() => scrollToFileCard(fileId));
   loadComments(true).catch((e) => { if (e.status === 401) handleAuthExpired(); });
 }
 
