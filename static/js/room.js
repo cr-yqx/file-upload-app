@@ -267,10 +267,17 @@ function renderSummary(file) {
   wrapper.innerHTML = "<p>摘要生成中，请稍候...</p>";
   return wrapper;
 }
+
+function setMetricValue(metricNode, label, value) {
+  if (!metricNode) return;
+  metricNode.innerHTML = `<small>${label}</small><strong>${value}</strong>`;
+  metricNode.setAttribute("aria-label", `${label} ${value}`);
+}
+
 function updateMetrics() {
-  metricTotal.textContent = `文件 ${state.files.length}`;
-  metricStarred.textContent = `星标 ${state.files.filter((x) => x.collab?.starred_by_me).length}`;
-  metricUnread.textContent = `未读 ${state.files.filter((x) => !x.collab?.read_by_me).length}`;
+  setMetricValue(metricTotal, "文件", state.files.length);
+  setMetricValue(metricStarred, "星标", state.files.filter((x) => x.collab?.starred_by_me).length);
+  setMetricValue(metricUnread, "未读", state.files.filter((x) => !x.collab?.read_by_me).length);
 }
 
 function renderMyUploadShortcuts() {
