@@ -203,21 +203,27 @@ body {
 #workspace {
     display: grid;
     grid-template-columns: minmax(250px, 300px) minmax(0, 1fr) minmax(320px, 380px);
-    gap: 0.9rem;
+    gap: 1rem;
     align-items: start;
     position: relative;
     isolation: isolate;
+    overflow: visible;
 }
 
 .sticky-column {
     position: sticky;
     top: var(--sticky-top);
+    align-self: start;
+}
+
+.column-scroll {
     max-height: calc(100vh - (var(--sticky-top) * 2));
     overflow: auto;
-    padding-right: 0.2rem;
     display: grid;
     gap: 0.8rem;
     align-content: start;
+    padding: 0.04rem 0.24rem 0.12rem;
+    scrollbar-gutter: stable both-edges;
 }
 
 .left-column,
@@ -228,14 +234,25 @@ body {
 
 .left-column,
 .right-column {
-    z-index: 3;
+    z-index: 4;
 }
 
 .middle-column {
     display: grid;
     gap: 0.85rem;
     position: relative;
-    z-index: 2;
+    z-index: 1;
+    overflow-x: clip;
+    contain: paint;
+}
+
+.middle-column .card {
+    box-shadow: 0 12px 24px rgba(16, 35, 56, 0.09);
+}
+
+.left-column .card,
+.right-column .card {
+    background: rgba(255, 255, 255, 0.82);
 }
 
 .card {
@@ -897,10 +914,10 @@ button,
 .pdf-highlight-layer {
     position: absolute;
     inset: 0;
-    pointer-events: auto;
 }
 
 .pdf-text-layer {
+    pointer-events: auto;
     opacity: 1;
     line-height: 1;
     user-select: text;
@@ -933,10 +950,20 @@ button,
     pointer-events: none;
 }
 
-.pdf-highlight {
+.thread-underline {
     position: absolute;
-    background: rgba(255, 225, 143, 0.52);
-    border-radius: 4px;
+    height: 2px;
+    border-radius: 999px;
+    background: rgba(182, 129, 40, 0.72);
+    box-shadow: 0 0 0 1px rgba(182, 129, 40, 0.18);
+    pointer-events: auto;
+    cursor: pointer;
+}
+
+.thread-underline.active {
+    height: 3px;
+    background: rgba(24, 85, 129, 0.9);
+    box-shadow: 0 0 0 1px rgba(24, 85, 129, 0.22);
 }
 
 .pdf-reader-side {
@@ -1101,6 +1128,9 @@ button,
     .right-column {
         grid-column: 1 / -1;
         position: static;
+    }
+
+    .column-scroll {
         max-height: none;
         overflow: visible;
     }
@@ -1114,8 +1144,12 @@ button,
     .left-column,
     .right-column {
         position: static;
+    }
+
+    .column-scroll {
         max-height: none;
         overflow: visible;
+        padding: 0;
     }
 
     .topbar {
@@ -1317,6 +1351,34 @@ button,
     user-select: text;
     -webkit-user-select: text;
     font-size: 1rem;
+}
+
+.docx-content .docx-table-scroll {
+    width: 100%;
+    overflow-x: auto;
+    margin: 0.4rem 0;
+}
+
+.docx-content table {
+    max-width: 100%;
+}
+
+.docx-content table.docx-table-grid {
+    width: 100%;
+    border-collapse: collapse;
+    border-spacing: 0;
+}
+
+.docx-content table.docx-table-grid th,
+.docx-content table.docx-table-grid td {
+    border: 1px solid rgba(17, 50, 76, 0.28);
+    padding: 0.42rem 0.56rem;
+    vertical-align: top;
+}
+
+.docx-content table.docx-table-grid th {
+    background: rgba(235, 243, 251, 0.92);
+    font-weight: 700;
 }
 
 .docx-content [data-segment-key] {

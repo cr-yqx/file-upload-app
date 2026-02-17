@@ -207,6 +207,18 @@ def test_word_upload_and_word_filter(client):
     assert doc_upload.status_code == 200
     assert png_upload.status_code == 200
 
+    docx_payload = docx_upload.get_json()
+    doc_payload = doc_upload.get_json()
+    assert docx_payload["summary_job_id"] is not None
+    assert docx_payload["file"]["summary_status"] == "pending"
+    docx_job = client.get(f"/api/rooms/word-room/jobs/{docx_payload['summary_job_id']}")
+    assert docx_job.status_code == 200
+    assert docx_job.get_json()["job"]["status"] == "queued"
+
+    assert doc_payload["summary_job_id"] is None
+    assert doc_payload["file"]["summary_status"] == "not_applicable"
+    assert "docx" in (doc_payload["file"]["summary_error"] or "").lower()
+
     word_only = client.get("/api/rooms/word-room/files?file_type=word")
     assert word_only.status_code == 200
     word_files = word_only.get_json()["files"]

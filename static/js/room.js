@@ -1219,26 +1219,48 @@ function getActiveHighlightLayer() {
   return pdfHighlightLayer;
 }
 
-function clearHighlights() {
+function clearThreadDecorations() {
   pdfHighlightLayer.innerHTML = "";
   docxHighlightLayer.innerHTML = "";
 }
 
-function drawHighlight(range) {
-  clearHighlights();
-  if (!range) return;
-  const stageEl = getActiveStageElement();
+function drawThreadUnderline(rect, stageRect, threadId, active = false) {
   const layer = getActiveHighlightLayer();
-  const stage = stageEl.getBoundingClientRect();
-  Array.from(range.getClientRects()).forEach((rect) => {
-    if (rect.width < 2 || rect.height < 2) return;
-    const h = document.createElement("div");
-    h.className = "pdf-highlight";
-    h.style.left = `${rect.left - stage.left}px`;
-    h.style.top = `${rect.top - stage.top}px`;
-    h.style.width = `${rect.width}px`;
-    h.style.height = `${rect.height}px`;
-    layer.appendChild(h);
+  const mark = document.createElement("div");
+  mark.className = `thread-underline${active ? " active" : ""}`;
+  mark.dataset.threadId = String(threadId);
+  mark.style.left = `${Math.max(0, rect.left - stageRect.left)}px`;
+  mark.style.top = `${Math.max(0, rect.bottom - stageRect.top - 2)}px`;
+  mark.style.width = `${Math.max(2, rect.width)}px`;
+  mark.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const parsed = Number.parseInt(mark.dataset.threadId || "", 10);
+    if (!Number.isFinite(parsed)) return;
+    if (state.reader.selectedThreadId === parsed) return;
+    state.reader.selectedThreadId = parsed;
+    renderLineThreads();
+  });
+  layer.appendChild(mark);
+}
+
+function renderThreadUnderlines() {
+  clearThreadDecorations();
+  if (!state.reader.hasTextLayer || !Array.isArray(state.reader.threads) || !state.reader.threads.length) return;
+  const stageEl = getActiveStageElement();
+  if (!stageEl) return;
+  const stageRect = stageEl.getBoundingClientRect();
+  if (stageRect.width <= 0 || stageRect.height <= 0) return;
+
+  state.reader.threads.forEach((thread) => {
+    const offsets = findThreadOffsets(thread);
+    if (!offsets) return;
+    const range = buildRangeFromOffsets(offsets.start, offsets.end);
+    if (!range) return;
+    Array.from(range.getClientRects()).forEach((rect) => {
+      if (rect.width < 2 || rect.height < 2) return;
+      drawThreadUnderline(rect, stageRect, thread.id, thread.id === state.reader.selectedThreadId);
+    });
   });
 }
 
@@ -1255,21 +1277,12 @@ function findThreadOffsets(thread) {
   return { start: idx, end: idx + quote.length };
 }
 
-function highlightSelectedThread() {
-  const thread = state.reader.threads.find((x) => x.id === state.reader.selectedThreadId);
-  if (!thread || !state.reader.hasTextLayer) { clearHighlights(); return; }
-  const offsets = findThreadOffsets(thread);
-  if (!offsets) { clearHighlights(); return; }
-  const range = buildRangeFromOffsets(offsets.start, offsets.end);
-  drawHighlight(range);
-}
-
 function renderLineThreads() {
   lineThreadsList.innerHTML = "";
   if (!state.reader.threads.length) {
     lineThreadsEmpty.hidden = false;
     lineThreadsEmpty.textContent = state.reader.mode === "docx" ? "当前文档暂无划线评论。" : "本页暂无划线评论。";
-    clearHighlights();
+    renderThreadUnderlines();
     return;
   }
   lineThreadsEmpty.hidden = true;
@@ -1278,7 +1291,7 @@ function renderLineThreads() {
     const item = document.createElement("article");
     item.className = `line-thread-item ${thread.id === state.reader.selectedThreadId ? "active" : ""}`;
     const scopeLabel = thread.source_type === "docx" ? `段落 ${thread.segment_key || "-"}` : `第 ${thread.page_number} 页`;
-    item.innerHTML = `<div class="line-thread-meta"><span>${scopeLabel}</span><span>${formatTimestamp(thread.updated_at || thread.created_at)}</span></div><p class="line-thread-quote">${normalizeWhitespace(thread.quote_text) || "页级评论（无高亮文本）"}</p>`;
+    item.innerHTML = `<div class="line-thread-meta"><span>${scopeLabel}</span><span>${formatTimestamp(thread.updated_at || thread.created_at)}</span></div><p class="line-thread-quote">${normalizeWhitespace(thread.quote_text) || "页级评论（无引用文本）"}</p>`;
 
     const messages = document.createElement("div");
     messages.className = "line-thread-messages";
@@ -1332,10 +1345,13 @@ function renderLineThreads() {
     replyRow.appendChild(input); replyRow.appendChild(button);
     item.appendChild(replyRow);
 
-    item.addEventListener("click", () => { state.reader.selectedThreadId = thread.id; renderLineThreads(); highlightSelectedThread(); });
+    item.addEventListener("click", () => {
+      state.reader.selectedThreadId = thread.id;
+      renderLineThreads();
+    });
     lineThreadsList.appendChild(item);
   });
-  highlightSelectedThread();
+  renderThreadUnderlines();
 }
 
 async function loadLineThreads(resetSelection = false) {
@@ -1447,6 +1463,30 @@ function assignDocxSegments() {
   });
 }
 
+function hasDocxBorderHint(element) {
+  const className = String(element.className || "").toLowerCase();
+  const styleText = String(element.getAttribute("style") || "").toLowerCase();
+  return className.includes("tablegrid") || styleText.includes("border");
+}
+
+function normalizeDocxTables() {
+  if (!docxContent) return;
+  const tables = Array.from(docxContent.querySelectorAll("table"));
+  tables.forEach((table) => {
+    const cells = Array.from(table.querySelectorAll("th,td"));
+    const hasExplicitBorder = hasDocxBorderHint(table) || cells.some(hasDocxBorderHint);
+    if (!hasExplicitBorder) {
+      table.classList.add("docx-table-grid");
+    }
+
+    if (!table.parentElement || table.parentElement.classList.contains("docx-table-scroll")) return;
+    const wrapper = document.createElement("div");
+    wrapper.className = "docx-table-scroll";
+    table.parentElement.insertBefore(wrapper, table);
+    wrapper.appendChild(table);
+  });
+}
+
 async function renderDocxDocument(file, resetThreads = false) {
   ensureDocxLibsReady();
   const response = await fetch(file.url, { credentials: "same-origin" });
@@ -1462,6 +1502,7 @@ async function renderDocxDocument(file, resetThreads = false) {
   });
   clearReaderLayers();
   docxContent.innerHTML = sanitized;
+  normalizeDocxTables();
   assignDocxSegments();
   state.reader.textIndexMap = buildTextIndexMap(docxContent);
   state.reader.hasTextLayer = normalizeWhitespace(docxContent.textContent).length > 0;
@@ -1747,11 +1788,11 @@ function openSelectionComposer(anchor, focusComposer = false) {
   }
 }
 
-function cancelSelectionComposer(resetHighlight = true) {
+function cancelSelectionComposer(resetDecoration = true) {
   lineSelectionComposer.hidden = true;
   lineSelectionInput.value = "";
   state.reader.selectedAnchor = null;
-  if (resetHighlight) highlightSelectedThread();
+  if (resetDecoration) renderThreadUnderlines();
 }
 
 function capturePdfSelection(trigger = "selectionchange") {
@@ -1788,7 +1829,6 @@ function capturePdfSelection(trigger = "selectionchange") {
   const anchor = buildAnchorFromRange(range);
   if (trigger === "selectionchange") {
     state.reader.pendingSelectionAnchor = anchor;
-    drawHighlight(range);
     return;
   }
 
@@ -1799,7 +1839,6 @@ function capturePdfSelection(trigger = "selectionchange") {
     return;
   }
   openSelectionComposer(finalAnchor, true);
-  drawHighlight(range);
 }
 
 async function submitLineSelectionThread() {

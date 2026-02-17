@@ -5,8 +5,10 @@ import threading
 import time
 import uuid
 import hashlib
+import zipfile
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Set, Tuple
+from xml.etree import ElementTree as ET
 
 from flask import (
     Flask,
@@ -2921,7 +2923,8 @@ def handle_file_upload(room: Room, deprecated: bool, bypass_auth: bool, require_
 
     file_size = os.path.getsize(file_path)
     mime_type = MIME_TYPES.get(extension, uploaded_file.mimetype or "application/octet-stream")
-    summary_status = SUMMARY_STATUS_PENDING if extension == "pdf" else SUMMARY_STATUS_NOT_APPLICABLE
+    summary_supported = extension in {"pdf", "docx"}
+    summary_status = SUMMARY_STATUS_PENDING if summary_supported else SUMMARY_STATUS_NOT_APPLICABLE
 
     file_record = FileRecord(
         room_id=room.id,
@@ -2935,14 +2938,16 @@ def handle_file_upload(room: Room, deprecated: bool, bypass_auth: bool, require_
         uploader_nickname=viewer_nickname or None,
         summary_status=summary_status,
     )
+    if extension == "doc":
+        file_record.summary_error = "`.doc` 摘要暂不支持，请转换为 `.docx` 后重试。"
     db.session.add(file_record)
     db.session.commit()
 
     summary_job = None
-    if extension == "pdf":
+    if summary_supported:
         summary_job = SummaryJob(
             file_id=file_record.id,
-            job_type="pdf_summary",
+            job_type="docx_summary" if extension == "docx" else "pdf_summary",
             status=JOB_STATUS_QUEUED,
             attempts=0,
         )
@@ -3037,6 +3042,53 @@ def extract_pdf_text(file_path: str) -> str:
         extracted_text = (page.extract_text() or "").strip()
         if extracted_text:
             text_chunks.append(extracted_text)
+
+    return "\n".join(text_chunks).strip()
+
+
+def extract_docx_text(file_path: str) -> str:
+    with zipfile.ZipFile(file_path) as archive:
+        try:
+            xml_payload = archive.read("word/document.xml")
+        except KeyError:
+            return ""
+
+    root = ET.fromstring(xml_payload)
+    namespace = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+    body = root.find("w:body", namespace)
+    if body is None:
+        return ""
+
+    text_chunks = []
+    paragraph_tag = f"{{{namespace['w']}}}p"
+    table_tag = f"{{{namespace['w']}}}tbl"
+
+    def extract_node_text(node: ET.Element) -> str:
+        text_parts = []
+        for text_node in node.findall(".//w:t", namespace):
+            value = (text_node.text or "").strip()
+            if value:
+                text_parts.append(value)
+        return "".join(text_parts).strip()
+
+    for child in list(body):
+        if child.tag == paragraph_tag:
+            paragraph_text = extract_node_text(child)
+            if paragraph_text:
+                text_chunks.append(paragraph_text)
+            continue
+
+        if child.tag != table_tag:
+            continue
+
+        for row in child.findall(".//w:tr", namespace):
+            row_cells = []
+            for cell in row.findall("./w:tc", namespace):
+                cell_text = extract_node_text(cell)
+                if cell_text:
+                    row_cells.append(cell_text)
+            if row_cells:
+                text_chunks.append(" | ".join(row_cells))
 
     return "\n".join(text_chunks).strip()
 
@@ -3246,7 +3298,14 @@ def process_pdf_summary(summary_job_id: int) -> None:
                 if not os.path.exists(stored_path):
                     raise FileNotFoundError("Uploaded file is missing from storage.")
 
-                extracted_text = extract_pdf_text(stored_path)
+                summary_file_type = get_file_type_by_name(file_record.original_name_full or file_record.original_name or file_record.stored_name)
+                if summary_file_type == "pdf":
+                    extracted_text = extract_pdf_text(stored_path)
+                elif summary_file_type == "docx":
+                    extracted_text = extract_docx_text(stored_path)
+                else:
+                    raise ValueError("Summary generation is not supported for this file type.")
+
                 extracted_text = sanitize_summary_source_text(extracted_text)
                 min_chars = current_app.config["SUMMARY_MIN_TEXT_CHARS"]
                 if len(extracted_text) < min_chars:
@@ -3276,10 +3335,11 @@ def process_pdf_summary(summary_job_id: int) -> None:
             except Exception as exc:
                 error_message = str(exc)
                 app.logger.error(
-                    "Summary generation failed room=%s file_id=%s job_id=%s attempt=%s/%s used_chars=%s base_url=%s model=%s error=%s",
+                    "Summary generation failed room=%s file_id=%s job_id=%s type=%s attempt=%s/%s used_chars=%s base_url=%s model=%s error=%s",
                     file_record.room.slug,
                     file_record.id,
                     summary_job.id,
+                    summary_file_type if "summary_file_type" in locals() else "unknown",
                     attempt,
                     max_attempts,
                     len(cleaned_text) if "cleaned_text" in locals() else 0,
