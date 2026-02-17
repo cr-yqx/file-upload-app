@@ -647,17 +647,16 @@ function renderDiscussionSummary() {
   discussionSummaryContainer.innerHTML = "";
   const payload = state.discussionSummary?.summary_json;
   if (!payload?.by_commented_owner?.length) {
-    discussionSummaryContainer.innerHTML = '<p class="summary-placeholder">讨论结束后，这里会按“被评论者”分组展示可认领总结。</p>';
+    discussionSummaryContainer.innerHTML = '<p class="summary-placeholder">讨论结束后，这里会按“协作者”分组展示总结。</p>';
     return;
   }
 
   payload.by_commented_owner.forEach((group) => {
     const rawGroupActions = Array.isArray(group.claimable_actions) ? group.claimable_actions : [];
-    const ownerConsumedActions = new Set();
     const card = document.createElement("article");
     card.className = "summary-group";
     const ownerTitle = document.createElement("h4");
-    ownerTitle.textContent = `被评论者：${group.owner_nickname || "未命名上传者"}`;
+    ownerTitle.textContent = `${group.owner_nickname || "未命名上传者"}`;
     card.appendChild(ownerTitle);
 
     if (group.owner_summary) {
@@ -719,15 +718,14 @@ function renderDiscussionSummary() {
       fileCard.appendChild(divider);
 
       const actionBoardResult = deriveFileActionBoard(fileItem, rawGroupActions);
-      actionBoardResult.consumed.forEach((key) => ownerConsumedActions.add(key));
 
       const board = document.createElement("section");
       board.className = "action-board";
       const processing = actionBoardResult.processing || [];
       const followUp = actionBoardResult.followUp || [];
 
-      const processingCol = document.createElement("div");
-      processingCol.className = "processing-column";
+      const processingCol = document.createElement("section");
+      processingCol.className = "action-row processing-row";
       const processingTitle = document.createElement("h5");
       processingTitle.textContent = "处理";
       processingCol.appendChild(processingTitle);
@@ -736,8 +734,8 @@ function renderDiscussionSummary() {
       const boardDivider = document.createElement("div");
       boardDivider.className = "summary-divider";
 
-      const followCol = document.createElement("div");
-      followCol.className = "followup-column";
+      const followCol = document.createElement("section");
+      followCol.className = "action-row followup-row";
       const followTitle = document.createElement("h5");
       followTitle.textContent = "跟进";
       followCol.appendChild(followTitle);
@@ -749,19 +747,6 @@ function renderDiscussionSummary() {
       fileCard.appendChild(board);
       card.appendChild(fileCard);
     });
-
-    const groupActions = dedupeSummaryActionList(rawGroupActions, 20).filter(
-      (action) => !ownerConsumedActions.has(normalizeSummaryActionKey(action))
-    );
-    if (groupActions.length) {
-      const ownerActionSection = document.createElement("section");
-      ownerActionSection.className = "summary-section";
-      const ownerActionTitle = document.createElement("h5");
-      ownerActionTitle.textContent = "被评论者会后认领";
-      ownerActionSection.appendChild(ownerActionTitle);
-      ownerActionSection.appendChild(buildSummaryList(groupActions, (v) => String(v || ""), "暂无认领项。"));
-      card.appendChild(ownerActionSection);
-    }
     discussionSummaryContainer.appendChild(card);
   });
 }
